@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.db import create_db_and_tables
+from app.routers import users
 
 logging.basicConfig(level=logging.INFO)
 settings = get_settings()
@@ -34,8 +35,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Routers are registered here as features get built:
-#   app.include_router(<module>.router)
+# Routers are registered here as features get built.
+app.include_router(users.router)
 
 
 @app.get("/health", tags=["meta"])

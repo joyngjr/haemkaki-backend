@@ -1,8 +1,8 @@
 """Database engine and session plumbing.
 
 SQLModel table classes must be imported before create_db_and_tables() runs so
-they are registered on SQLModel.metadata. There are none yet — import new model
-modules here as they are added.
+they are registered on SQLModel.metadata. Import new model modules here as they
+are added.
 """
 
 from collections.abc import Generator
@@ -10,6 +10,7 @@ from collections.abc import Generator
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.config import get_settings
+from app.models import User  # noqa: F401  (registers the table)
 
 settings = get_settings()
 

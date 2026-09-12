@@ -7,6 +7,7 @@ are added.
 
 from collections.abc import Generator
 
+from sqlalchemy import inspect, text
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.config import get_settings
@@ -20,6 +21,14 @@ engine = create_engine(settings.sqlalchemy_url, echo=False, connect_args=_connec
 
 def create_db_and_tables() -> None:
     SQLModel.metadata.create_all(engine)
+    # This project intentionally has no migration framework yet. Add the one
+    # new nullable/defaulted column for existing demo databases as well.
+    columns = {column["name"] for column in inspect(engine).get_columns("user")}
+    if "clinical_profile_json" not in columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE \"user\" ADD COLUMN clinical_profile_json VARCHAR NOT NULL DEFAULT '{}'"),
+            )
 
 
 def get_session() -> Generator[Session, None, None]:

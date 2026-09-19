@@ -20,6 +20,9 @@ def utcnow() -> datetime:
 class FactorType(str, Enum):
     viii = "VIII"
     ix = "IX"
+    xi = "XI"
+    acquired = "acquired"
+    unknown = "unknown"
 
 
 class DoseState(str, Enum):
@@ -48,5 +51,9 @@ class User(SQLModel, table=True):
     stock_state: str
     vials_on_hand: int = 0
     days_cover: int = 0
+    # The profile flow gathers conditional clinical information that differs by
+    # diagnosis. Keeping it as validated JSON avoids pretending that FXI or
+    # acquired haemophilia can be represented by an FVIII/FIX-only column.
+    clinical_profile_json: str = Field(default="{}")
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)

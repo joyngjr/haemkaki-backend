@@ -30,8 +30,27 @@ Interactive docs at `/docs`.
 | `DELETE` | `/users/{id}` | remove a profile                       |
 
 `dose_state` is one of `covered` / `low` / `veryLow`, `stock_state` one of
-`wellStocked` / `moderate` / `low`, and `factor_type` one of `VIII` / `IX` —
-spelled exactly as the frontend's `DoseState` and `StockState` unions.
+`wellStocked` / `moderate` / `low`, and `factor_type` one of `VIII` / `IX` /
+`XI` / `acquired` / `unknown` — spelled exactly as the frontend's `DoseState`,
+`StockState` and `FactorType` unions.
+
+A profile also carries a nullable `clinical_profile` object holding what the
+onboarding form collects: diagnosis and its severity, sex, weight, date of
+birth, drug allergies, treatment approach, and a medication section for each of
+prophylaxis / on-demand / other. Its fields mirror the frontend's
+`ClinicalProfile` and `MedicationDetails` types in `src/lib/api.ts` one for one,
+so renaming a field here is a breaking change.
+
+It is stored as one JSON column and validated in `app/schemas.py` — the column
+cannot police which fields belong to which diagnosis, so that module is the only
+thing that does. Two things there are easy to break by accident:
+
+- Medication `dose`, `frequency` and `buffer_days` are **prose** the frontend
+  composes (`"3 times per week"`, `"7 days"`) and strips again when it reopens a
+  profile for editing. Store them verbatim; reformatting breaks that round-trip.
+- Fields that do not apply to the chosen diagnosis are **coerced to null, not
+  rejected**. The form re-checks only its first step before submitting, so a 422
+  would block a submit the UI considers valid.
 
 ## Run locally
 

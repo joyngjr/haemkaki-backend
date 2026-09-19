@@ -33,6 +33,8 @@ class ClinicalProfile(BaseModel):
     diagnosis: DiagnosisType
     sex: str = "prefer_not_to_say"
     age: int | None = Field(default=None, ge=0, le=130)
+    weight_kg: float | None = Field(default=None, gt=0, le=500)
+    date_of_birth: str | None = Field(default=None, max_length=10)
     has_drug_allergies: bool = False
     drug_allergy_details: str | None = Field(default=None, max_length=1000)
     # This is intentionally the diagnostic/pre-prophylaxis result, not a

@@ -14,8 +14,10 @@ app/
   main.py         FastAPI app, CORS, /health
   models.py       SQLModel tables + the dose/stock/factor enums
   schemas.py      Request and response models — the only place states are validated
+  tracker_schemas.py  Request and response models for the routine and entries
   routers/
     users.py      Profile CRUD
+    tracker.py    A profile's routine and day-by-day entries
 ```
 
 Interactive docs at `/docs`.
@@ -28,6 +30,26 @@ Interactive docs at `/docs`.
 | `GET`    | `/users/{id}` | one profile                            |
 | `PATCH`  | `/users/{id}` | update any subset of a profile's fields |
 | `DELETE` | `/users/{id}` | remove a profile                       |
+
+Each profile also has tracker data. There is one usual routine, and entries are
+filed by day (a dose, a refill, or a missed dose):
+
+| Method  | Path                            |                                                       |
+| ------- | ------------------------------- | ----------------------------------------------------- |
+| `GET`   | `/users/{id}/routine`           | the usual routine, all-null if not set yet             |
+| `PATCH` | `/users/{id}/routine`           | change any of `vials`, `frequency`, `start_date`       |
+| `GET`   | `/users/{id}/entries`           | every entry, oldest day first; `?from=&to=` to limit   |
+| `PUT`   | `/users/{id}/entries/{day}`     | make that day hold exactly the entries sent (`[]` clears it) |
+| `GET`   | `/users/{id}/shift`             | the answers to "shift future doses?" (entry ids), all-null if none |
+| `PUT`   | `/users/{id}/shift`             | save those answers                                    |
+| `GET`   | `/users/{id}/plans`             | the Plan Ahead plans (date range + optional frequency and dosage) |
+| `PUT`   | `/users/{id}/plans`             | make the profile hold exactly the plans sent           |
+| `GET`   | `/users/{id}/inventory`         | the Inventory card, or `null` if it has never been changed |
+| `PUT`   | `/users/{id}/inventory`         | save whether the card is shown and its supplies        |
+
+`frequency` is `{"unit": "days", "days": 3}` or `{"unit": "week", "weekdays": [1, 4]}`
+with weekdays 0 (Sunday) to 6 (Saturday). Entry ids are chosen by the frontend and
+kept, because it refers to doses by id. Deleting a profile deletes its tracker data.
 
 `dose_state` is one of `covered` / `low` / `veryLow`, `stock_state` one of
 `wellStocked` / `moderate` / `low`, and `factor_type` one of `VIII` / `IX` /

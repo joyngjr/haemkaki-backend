@@ -11,7 +11,14 @@ from sqlalchemy import inspect, text
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.config import get_settings
-from app.models import User  # noqa: F401  (registers the table)
+from app.models import (  # noqa: F401  (registers the tables)
+    TrackerEntry,
+    TrackerInventory,
+    TrackerPlan,
+    TrackerRoutine,
+    TrackerShift,
+    User,
+)
 
 settings = get_settings()
 

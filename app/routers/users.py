@@ -8,10 +8,18 @@ reshaping it.
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlmodel import Session, select
+from sqlmodel import Session, delete, select
 
 from app.db import get_session
-from app.models import User, utcnow
+from app.models import (
+    TrackerEntry,
+    TrackerInventory,
+    TrackerPlan,
+    TrackerRoutine,
+    TrackerShift,
+    User,
+    utcnow,
+)
 from app.schemas import ClinicalProfile, ProfileCreate, ProfileRead, ProfileUpdate
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -101,5 +109,9 @@ def update_user(
 
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_user(user_id: int, session: Session = Depends(get_session)) -> None:
-    session.delete(_get_or_404(session, user_id))
+    user = _get_or_404(session, user_id)
+    # Postgres enforces the foreign keys, so a profile's tracker data goes first.
+    for table in (TrackerEntry, TrackerRoutine, TrackerShift, TrackerPlan, TrackerInventory):
+        session.exec(delete(table).where(table.user_id == user_id))
+    session.delete(user)
     session.commit()

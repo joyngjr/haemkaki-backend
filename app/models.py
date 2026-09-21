@@ -91,6 +91,8 @@ class TrackerEntry(SQLModel, table=True):
     day: date = Field(index=True)
     kind: str
     vials: int | None = None
+    # On-demand dose: whether the bleed was "spontaneous" or "traumatic".
+    bleed_nature: str | None = None
     # Missed dose: what the user answered, and when they took it instead.
     missed_status: str | None = None
     taken_date: date | None = None

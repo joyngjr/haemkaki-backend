@@ -27,6 +27,11 @@ class EntryKind(str, Enum):
     missed = "missed"
 
 
+class BleedNature(str, Enum):
+    spontaneous = "spontaneous"
+    traumatic = "traumatic"
+
+
 class MissedStatus(str, Enum):
     awaiting = "awaiting"
     skipped = "skipped"
@@ -45,6 +50,7 @@ class EntryWrite(BaseModel):
     id: int = Field(ge=0, description="Chosen by the frontend; kept so doses can be referred to.")
     kind: EntryKind
     vials: int | None = Field(default=None, ge=1, le=VIALS_MAX)
+    bleed_nature: BleedNature | None = None
     missed_status: MissedStatus | None = None
     taken_date: date | None = None
     missed_date: date | None = None
@@ -56,6 +62,8 @@ class EntryWrite(BaseModel):
         needs_vials = {EntryKind.refill, EntryKind.on_demand, EntryKind.follow_up}
         if self.kind in needs_vials and self.vials is None:
             raise ValueError(f"{self.kind.value} entries need a vial count")
+        if self.bleed_nature is not None and self.kind != EntryKind.on_demand:
+            raise ValueError("bleed_nature only applies to on-demand entries")
         if self.kind == EntryKind.makeup:
             if self.missed_date is None or self.amount_source is None:
                 raise ValueError("makeup entries need missed_date and amount_source")

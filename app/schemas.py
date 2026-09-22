@@ -427,9 +427,15 @@ class RefillCreate(EventCreateBase):
 
 
 class ProphylaxisCreate(EventCreateBase):
-    """The planned preventative dose. Its size always comes from the routine."""
+    """The planned preventative dose.
+
+    Sized by the routine in force on its day unless `vials` says otherwise.
+    History imported from another tracker usually predates any routine here,
+    and a routine-sized dose with no routine charges nothing.
+    """
 
     kind: Literal[EventKind.prophylaxis]
+    vials: int | None = Field(default=None, gt=0, le=VIALS_MAX)
 
 
 class OnDemandCreate(EventCreateBase):
@@ -532,7 +538,8 @@ class TrackingEventRead(BaseModel):
     #: What the fold charged the cupboard for this event: positive for a
     #: refill, negative for a dose, zero when the amount is not known. Derived
     #: on every read — a prophylaxis dose is sized by the schedule in force on
-    #: its day — so the tracker shows the figure the supply total actually used.
+    #: its day, or by its own `vials` when it was imported with one — so the
+    #: tracker shows the figure the supply total actually used.
     applied_vials: int = 0
 
 
@@ -784,3 +791,95 @@ class SupplyItemRead(BaseModel):
     id: int
     name: str
     quantity: int
+
+
+# ---------------------------------------------------------------------------
+# Imports from another tracker
+#
+# Rows arrive already in the ledger vocabulary (`EventCreate`); the service in
+# `app/importing.py` decides, row by row, what an import would do, and the
+# report below is that decision — the same shape whether it was a dry run or
+# the real thing. `POST /users/{id}/imports` and the MCP tool both return it.
+# ---------------------------------------------------------------------------
+
+IMPORT_ROWS_MAX = 500
+IMPORT_SOURCE_MAX = 120
+
+OnConflict = Literal["skip", "replace"]
+
+
+class ImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: Where the rows came from — a file name, "Claude.ai" — kept on the batch.
+    source: str = Field(default="import", min_length=1, max_length=IMPORT_SOURCE_MAX)
+    #: A row that collides with one already in the ledger: keep the ledger's
+    #: row, or delete it and write this one.
+    on_conflict: OnConflict = "skip"
+    #: Report what would happen and write nothing.
+    dry_run: bool = False
+    events: list[EventCreate] = Field(min_length=1, max_length=IMPORT_ROWS_MAX)
+
+
+class ImportAction(str, Enum):
+    create = "create"
+    replace = "replace"
+    skip = "skip"
+    error = "error"
+
+
+class ImportReason(str, Enum):
+    #: An identical row is already in the ledger, or earlier in this batch.
+    already_present = "already-present"
+    #: Collides with a ledger row: skipped, or replaced it under `on_conflict`.
+    conflict = "conflict"
+    #: Collides with an earlier row of the same batch. Never written.
+    in_batch_conflict = "in-batch-conflict"
+    #: Dated after today in Singapore. The tracker cannot log the future.
+    future_date = "future-date"
+
+
+class ImportRowResult(BaseModel):
+    index: int
+    kind: EventKind
+    occurred_on: date
+    action: ImportAction
+    reason: ImportReason | None = None
+    #: Ledger ids this row collides with (skip) or removes (replace).
+    existing_ids: list[int] = Field(default_factory=list)
+    #: For a collision inside the batch, the earlier row's index.
+    conflicts_with_index: int | None = None
+    #: The id it was written under; None on a dry run or when nothing was written.
+    event_id: int | None = None
+    message: str
+
+
+class ImportReport(BaseModel):
+    dry_run: bool
+    #: False on a dry run, and on a real import refused because a row was in
+    #: error — nothing was written either way.
+    written: bool
+    batch_id: int | None = None
+    source: str
+    on_conflict: OnConflict
+    rows_received: int
+    rows_created: int
+    rows_replaced: int
+    rows_skipped: int
+    rows_errored: int
+    rows: list[ImportRowResult]
+    #: The fold after a real import, so the caller can say what changed.
+    status: StatusRead | None = None
+
+
+class ImportBatchRead(BaseModel):
+    id: int
+    source: str
+    created_at: datetime
+    rows_received: int
+    rows_created: int
+    rows_replaced: int
+    rows_skipped: int
+    event_ids: list[int]
+    #: How many of those events still exist — what an undo would remove.
+    events_remaining: int

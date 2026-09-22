@@ -380,7 +380,8 @@ def event_vials(event: TrackingEvent, dose_vials: int) -> int:
             return 0
         return event.vials
     if event.kind == EventKind.prophylaxis.value:
-        return -dose_vials
+        # An imported dose may say how big it was; otherwise the routine sizes it.
+        return -(event.vials or dose_vials)
     if event.kind in {EventKind.on_demand.value, EventKind.follow_up.value}:
         if not event.vials:
             logger.warning("%s event %s has no vials; skipped", event.kind, event.id)

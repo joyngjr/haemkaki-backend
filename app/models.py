@@ -109,7 +109,8 @@ class TrackingEvent(SQLModel, table=True):
     user_id: int = Field(foreign_key="user.id", index=True)
     kind: str
     occurred_on: date = Field(index=True)
-    #: refill / on-demand / follow-up. A prophylaxis dose defers to the routine.
+    #: refill / on-demand / follow-up, and a prophylaxis dose that was imported
+    #: with its own count. A prophylaxis dose without one defers to the routine.
     vials: int | None = None
     #: makeup -> the day whose dose this made up for.
     missed_on: date | None = None
@@ -218,3 +219,25 @@ class ScheduleException(SQLModel, table=True):
     moved_to: date
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
+
+
+class ImportBatch(SQLModel, table=True):
+    """One import from another tracker, kept so it can be undone.
+
+    The rows themselves are ordinary `trackingevent`s: the fold cannot tell they
+    were imported. This is the receipt, which ids the import created, so
+    `DELETE /users/{id}/imports/{batch}` takes exactly those back out. Rows an
+    import replaced are gone; only what it added is reversible.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    #: Free text from the client: the file name, "Claude.ai", "Excel export".
+    source: str = ""
+    #: JSON array of the trackingevent ids this import created.
+    event_ids_json: str = "[]"
+    rows_received: int = 0
+    rows_created: int = 0
+    rows_replaced: int = 0
+    rows_skipped: int = 0
+    created_at: datetime = Field(default_factory=utcnow)

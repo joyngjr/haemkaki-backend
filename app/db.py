@@ -16,6 +16,7 @@ from app.config import get_settings
 from app.models import (  # noqa: F401  (registers the tables)
     DosePlan,
     DoseSchedule,
+    ImportBatch,
     ScheduleException,
     SupplyItem,
     TrackingEvent,

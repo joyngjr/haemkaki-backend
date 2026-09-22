@@ -15,6 +15,7 @@ from app.db import get_session
 from app.models import (
     DosePlan,
     DoseSchedule,
+    ImportBatch,
     ScheduleException,
     SupplyItem,
     TrackingEvent,
@@ -128,7 +129,14 @@ def delete_user(user_id: int, session: Session = Depends(get_session)) -> None:
     user = _get_or_404(session, user_id)
     # No ON DELETE CASCADE: SQLite ignores it unless foreign keys are switched
     # on per connection, so the children are removed here where it is certain.
-    for table in (ScheduleException, DoseSchedule, DosePlan, TrackingEvent, SupplyItem):
+    for table in (
+        ScheduleException,
+        DoseSchedule,
+        DosePlan,
+        TrackingEvent,
+        SupplyItem,
+        ImportBatch,
+    ):
         for row in session.exec(select(table).where(table.user_id == user_id)).all():
             session.delete(row)
     session.delete(user)

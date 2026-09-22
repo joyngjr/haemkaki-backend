@@ -45,6 +45,7 @@ def status_read(session: Session, user: User, as_of: date | None = None) -> Stat
         order=OrderAdvice(**asdict(supply.order)) if supply.order else None,
         dose_state=services.dose_state(supply),
         stock_state=services.stock_state(supply.vials_on_hand),
+        missed_doses=supply.missed_doses,
         recent_events=[
             event_read(event, supply.applied.get(event.id or 0, 0))
             for event in reversed(supply.events[-RECENT_EVENTS:])

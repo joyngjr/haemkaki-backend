@@ -15,10 +15,10 @@ The rules mirror the tracker's own per-day invariants (`withEntry` and
 - A refill collides with another refill and nothing else.
 - The four factor uses — prophylaxis, on-demand, follow-up, makeup — collide
   with each other: one use per day.
-- A missed record collides with another missed record, and with a prophylaxis
-  or makeup dose (a routine dose supersedes the record that it was missed). An
-  on-demand or follow-up dose leaves a missed record alone: a bleed can be
-  treated on a day the routine dose was missed.
+- A missed dose is nothing to import. It is derived from the routine (a
+  planned day with no use on it), so a sheet's "missed" rows are dropped by
+  whoever maps the file; what does come across is the routine that makes the
+  gap visible, and a `makeup` row for a dose that was taken late.
 - A row identical to one already in the ledger, or earlier in the batch, is
   skipped as already present, so re-running the same sheet is idempotent.
 - A collision with the ledger is skipped, or replaces the ledger's rows when
@@ -59,8 +59,6 @@ USE_KINDS = frozenset(
         EventKind.makeup.value,
     }
 )
-#: The uses that supersede a missed record on the same day.
-SUPERSEDE_MISSED = frozenset({EventKind.prophylaxis.value, EventKind.makeup.value})
 #: Columns that do not make a row the same row.
 IDENTITY_EXCLUDE = {"id", "user_id", "created_at", "updated_at"}
 
@@ -69,14 +67,33 @@ def collides(a: str, b: str) -> bool:
     """Whether two kinds cannot share a day."""
     if a == b:
         return True
-    if a in USE_KINDS and b in USE_KINDS:
-        return True
-    missed = EventKind.missed.value
-    if a == missed:
-        return b in SUPERSEDE_MISSED
-    if b == missed:
-        return a in SUPERSEDE_MISSED
-    return False
+    return a in USE_KINDS and b in USE_KINDS
+
+
+def already_used_on_missed_day(
+    row: TrackingEvent,
+    ledger_by_day: dict[date, list[TrackingEvent]],
+    pending_by_day: dict[date, list["PlannedRow"]],
+) -> list[int] | None:
+    """The uses already logged on the day a makeup row claims to make up for.
+
+    None when the row is not a makeup, or when that day is genuinely empty. An
+    empty list means the clash is with an earlier row of the same batch, which
+    has no id yet. A day with a use on it was not missed, and charging both
+    that use and the makeup would take the same dose out of the cupboard twice.
+    """
+    if row.kind != EventKind.makeup.value or row.missed_on is None:
+        return None
+    logged = [
+        event.id
+        for event in ledger_by_day.get(row.missed_on, [])
+        if event.kind in USE_KINDS and event.id is not None
+    ]
+    if logged:
+        return logged
+    if any(planned.row.kind in USE_KINDS for planned in pending_by_day.get(row.missed_on, [])):
+        return []
+    return None
 
 
 def identity(row: TrackingEvent) -> dict:
@@ -157,8 +174,7 @@ def plan_import(
         same_day_ledger = by_day.get(day, [])
         same_day_batch = pending.get(day, [])
 
-        late = row.taken_on is not None and row.taken_on > today
-        if day > today or late:
+        if day > today:
             planned.action = ImportAction.error
             planned.reason = ImportReason.future_date
             planned.message = f"{label} is after today ({today.isoformat()})"
@@ -179,6 +195,14 @@ def plan_import(
             planned.message = (
                 f"row {clash.index} already logs a {clash.row.kind} on {day.isoformat()}; "
                 "one factor use per day — merge them"
+            )
+        elif (claimed := already_used_on_missed_day(row, by_day, pending)) is not None:
+            planned.action = ImportAction.error
+            planned.reason = ImportReason.not_missed
+            planned.existing_ids = claimed
+            planned.message = (
+                f"{label} makes up for {row.missed_on.isoformat() if row.missed_on else '?'}, "
+                "but a factor use is already logged on that day — it was not missed"
             )
         elif clashes := [e for e in same_day_ledger if collides(e.kind, row.kind)]:
             planned.existing_ids = [e.id for e in clashes if e.id is not None]

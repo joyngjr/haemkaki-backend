@@ -12,6 +12,10 @@ Three questions, answered in one pass because they share their inputs:
 * what is planned — the schedule's occurrences, with moved ones moved and a
   plan's dates following the plan instead, and from those the next dose that
   nothing has settled;
+* which doses were missed — planned days already past with no factor use on
+  them. A miss is the absence of an event, so it is derived here rather than
+  stored; backdating the dose, or logging a `makeup` that names the day,
+  makes it stop being one;
 * how long the cupboard lasts — the planned doses walked forward against the
   stock, which gives the run-out date and, less the buffer, the order date.
 
@@ -65,11 +69,6 @@ DOSE_KINDS = frozenset(
     }
 )
 
-#: Kinds that settle a planned dose on their day: any dose (the tracker keeps
-#: one factor use per day, so an on-demand dose stands in for the planned one)
-#: or a missed-dose record, whatever it was answered with.
-RESOLVING_KINDS = DOSE_KINDS | {EventKind.missed.value}
-
 #: Above this fraction of the interval elapsed, the last dose is still holding.
 COVERED_FRACTION = 0.66
 
@@ -79,6 +78,10 @@ STOCK_MODERATE = 2
 #: An order covers this many days of doses past the day stock runs out, plus
 #: the buffer. A month is what a household order looks like.
 ORDER_COVERS_DAYS = 30
+
+#: How far back the fold looks for missed doses. Home shows a handful of recent
+#: ones; the tracker derives its own from the month it is showing.
+MISSED_LOOKBACK_DAYS = 30
 
 
 @dataclass(frozen=True)
@@ -127,6 +130,9 @@ class SupplySnapshot:
     #: The series in force on `as_of`.
     schedule: DoseSchedule | None = None
     next_dose: Occurrence | None = None
+    #: Planned days before `as_of` with no factor use on them, newest first,
+    #: over the last MISSED_LOOKBACK_DAYS.
+    missed_doses: list[date] = field(default_factory=list)
     runs_out_on: date | None = None
     days_cover: int = 0
     order: OrderAdvice | None = None
@@ -368,9 +374,9 @@ def ledger(session: Session, user_id: int, as_of: date) -> list[TrackingEvent]:
 def event_vials(event: TrackingEvent, dose_vials: int) -> int:
     """Vials this event moves in or out of the cupboard.
 
-    A dose whose amount is still unknown counts as zero rather than guessing,
-    and a missed dose moves nothing — the dose itself is a separate `makeup`
-    event on the day it was actually taken.
+    A dose whose amount is still unknown counts as zero rather than guessing.
+    A missed dose moves nothing because it is nothing: no event is written for
+    one, and the dose that made up for it is charged on the day it was taken.
     """
     if event.kind == EventKind.refill.value:
         if not event.vials:
@@ -451,14 +457,21 @@ def build_supply(
     if not rules:
         return snapshot
 
-    settled = {event.occurred_on for event in events if event.kind in RESOLVING_KINDS}
+    # A day is settled by a factor use on it — the tracker keeps one per day,
+    # so an on-demand dose stands in for the planned one — or by a makeup
+    # dose taken later that names it.
+    settled = {event.occurred_on for event in events if event.kind in DOSE_KINDS}
+    settled |= {
+        event.missed_on
+        for event in events
+        if event.kind == EventKind.makeup.value and event.missed_on is not None
+    }
 
     # The next dose: the first planned one after the last logged dose that
     # nothing has settled. Searching from the last dose rather than from the
     # series start means someone who began logging late is not nagged about
     # every dose before that; searching past `as_of` means an unlogged dose
-    # stays "next" — and reads as overdue — until it is logged, moved or
-    # recorded as missed.
+    # stays "next" — and reads as overdue — until it is logged or moved.
     since = (
         snapshot.last_dose_on + timedelta(days=1)
         if snapshot.last_dose_on
@@ -469,6 +482,22 @@ def build_supply(
         if occurrence.on not in settled:
             snapshot.next_dose = occurrence
             break
+
+    # The misses: planned days already past with nothing logged on them. Only
+    # the recent window, because this is what Home lists rather than a full
+    # adherence history, and a profile with no routine has no misses to find.
+    missed = {
+        occurrence.on
+        for occurrence in occurrences(
+            schedules,
+            exceptions,
+            plans,
+            as_of - timedelta(days=MISSED_LOOKBACK_DAYS),
+            as_of - timedelta(days=1),
+        )
+        if occurrence.on not in settled
+    }
+    snapshot.missed_doses = sorted(missed, reverse=True)
 
     # The forecast: planned doses from today against what is in the cupboard.
     # Today's dose, if already logged, was charged by the fold above.

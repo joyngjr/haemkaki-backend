@@ -38,6 +38,41 @@ def _event_or_404(session: Session, user_id: int, event_id: int) -> TrackingEven
     return event
 
 
+def _check_writable(
+    session: Session, user_id: int, payload: EventCreate, replacing: int | None = None
+) -> None:
+    """The two invariants a single event can break on its own.
+
+    Neither can live in `app/schemas.py`: one needs today's date in Singapore,
+    the other needs the ledger. The importer enforces the same two per row
+    (`future_date` and `not_missed` in `app/importing.py`).
+    """
+    today = services.today_sgt()
+    if payload.occurred_on > today:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"{payload.occurred_on.isoformat()} is after today ({today.isoformat()}); "
+            "the tracker cannot log the future",
+        )
+    missed_on = getattr(payload, "missed_on", None)
+    if missed_on is None:
+        return
+    # A makeup dose only makes sense for a day that has no dose of its own:
+    # a planned day with a use on it was never missed, and charging both would
+    # take one dose out of the cupboard twice.
+    statement = select(TrackingEvent).where(
+        TrackingEvent.user_id == user_id, TrackingEvent.occurred_on == missed_on
+    )
+    if replacing is not None:
+        statement = statement.where(TrackingEvent.id != replacing)
+    if any(event.kind in services.DOSE_KINDS for event in session.exec(statement).all()):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"a factor use is already logged on {missed_on.isoformat()}, "
+            "so that dose was not missed",
+        )
+
+
 def _read_one(session: Session, event: TrackingEvent) -> TrackingEventRead:
     schedules = services.load_schedules(session, event.user_id)
     plans = services.load_plans(session, event.user_id)
@@ -81,8 +116,9 @@ def create_event(
     user_id: int, payload: EventCreate, session: Session = Depends(get_session)
 ) -> TrackingEventRead:
     """All writes go through `to_event` — it is the only thing stopping a
-    refill from carrying a missed-dose status."""
+    refill from carrying a make-up dose's `missed_on`."""
     _get_or_404(session, user_id)
+    _check_writable(session, user_id, payload)
     event = to_event(payload, user_id)
     session.add(event)
     session.commit()
@@ -101,6 +137,7 @@ def replace_event(
     one: editing a day replaces its entry outright.
     """
     existing = _event_or_404(session, user_id, event_id)
+    _check_writable(session, user_id, payload, replacing=event_id)
     replacement = to_event(payload, user_id)
     for field in TrackingEvent.model_fields:
         if field in {"id", "user_id", "created_at", "updated_at"}:

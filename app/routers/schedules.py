@@ -80,11 +80,10 @@ def list_occurrences(
     return [occurrence_read(occurrence) for occurrence in found]
 
 
-@router.post("", response_model=ScheduleRead, status_code=status.HTTP_201_CREATED)
-def create_schedule(
-    user_id: int, payload: ScheduleCreate, session: Session = Depends(get_session)
-) -> ScheduleRead:
-    _get_or_404(session, user_id)
+def replace_series(session: Session, user_id: int, payload: ScheduleCreate) -> DoseSchedule:
+    """Create a series, first deleting every other one when `payload.replace`
+    asks — in the same transaction, so there is no window with no routine.
+    Shared with the MCP `set_routine` tool."""
     if payload.replace:
         for existing in services.load_schedules(session, user_id):
             _delete_schedule(session, existing)
@@ -98,7 +97,15 @@ def create_schedule(
     session.add(schedule)
     session.commit()
     session.refresh(schedule)
-    return schedule_read(schedule)
+    return schedule
+
+
+@router.post("", response_model=ScheduleRead, status_code=status.HTTP_201_CREATED)
+def create_schedule(
+    user_id: int, payload: ScheduleCreate, session: Session = Depends(get_session)
+) -> ScheduleRead:
+    _get_or_404(session, user_id)
+    return schedule_read(replace_series(session, user_id, payload))
 
 
 @router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)

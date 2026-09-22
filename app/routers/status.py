@@ -13,6 +13,7 @@ from sqlmodel import Session
 
 from app import services
 from app.db import get_session
+from app.models import User
 from app.routers.users import _clinical_profile, _get_or_404
 from app.schemas import OrderAdvice, StatusRead, event_read, occurrence_read, schedule_read
 
@@ -21,16 +22,15 @@ router = APIRouter(prefix="/users/{user_id}/status", tags=["status"])
 RECENT_EVENTS = 5
 
 
-@router.get("", response_model=StatusRead)
-def read_status(
-    user_id: int,
-    as_of: date | None = Query(None, description="Defaults to today in Singapore."),
-    session: Session = Depends(get_session),
-) -> StatusRead:
-    user = _get_or_404(session, user_id)
+def status_read(session: Session, user: User, as_of: date | None = None) -> StatusRead:
+    """The fold for one profile as the API reports it.
+
+    Shared with the importer and the MCP tools, which answer a write with the
+    balance it produced rather than sending the client back for it.
+    """
     clinical_profile = _clinical_profile(user)
     buffer_days = clinical_profile.minimum_buffer_days if clinical_profile else None
-    supply = services.build_supply(session, user_id, buffer_days, as_of)
+    supply = services.build_supply(session, user.id, buffer_days, as_of)
     return StatusRead(
         as_of=supply.as_of,
         vials_on_hand=supply.vials_on_hand,
@@ -45,8 +45,18 @@ def read_status(
         order=OrderAdvice(**asdict(supply.order)) if supply.order else None,
         dose_state=services.dose_state(supply),
         stock_state=services.stock_state(supply.vials_on_hand),
+        missed_doses=supply.missed_doses,
         recent_events=[
             event_read(event, supply.applied.get(event.id or 0, 0))
             for event in reversed(supply.events[-RECENT_EVENTS:])
         ],
     )
+
+
+@router.get("", response_model=StatusRead)
+def read_status(
+    user_id: int,
+    as_of: date | None = Query(None, description="Defaults to today in Singapore."),
+    session: Session = Depends(get_session),
+) -> StatusRead:
+    return status_read(session, _get_or_404(session, user_id), as_of)

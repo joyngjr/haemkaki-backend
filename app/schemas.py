@@ -22,7 +22,6 @@ from app.models import (
     DoseState,
     EventKind,
     FactorType,
-    MissedStatus,
     StockState,
     TrackingEvent,
     parse_weekdays,
@@ -35,8 +34,6 @@ DAYS_COVER_MAX = 365
 # The allergy picker has no selection limit and the catalog holds 187 drugs, so
 # the worst honest case is a few thousand characters of joined names.
 ALLERGY_DETAILS_MAX = 4000
-# Longest real combination is 56 characters; the headroom is for new options.
-TREATMENT_APPROACH_MAX = 128
 ITEMS_JSON_MAX = 8000
 # A prophylaxis interval longer than a quarter is not a routine.
 INTERVAL_DAYS_MAX = 90
@@ -56,8 +53,7 @@ class DiagnosisType(str, Enum):
     other_or_unknown = "other_or_unknown"
 
 
-#: Diagnoses someone is born with — the only ones with a severity band and an
-#: inhibitor history.
+#: Diagnoses someone is born with — the only ones with a severity band.
 CONGENITAL_DIAGNOSES = frozenset(
     {
         DiagnosisType.haemophilia_a,
@@ -66,17 +62,6 @@ CONGENITAL_DIAGNOSES = frozenset(
         DiagnosisType.symptomatic_carrier_b,
     }
 )
-#: Factor IX diagnoses, where anaphylaxis to FIX is a real and specific risk.
-FACTOR_IX_DIAGNOSES = frozenset({DiagnosisType.haemophilia_b, DiagnosisType.symptomatic_carrier_b})
-
-
-class Sex(str, Enum):
-    male = "male"
-    female = "female"
-    other = "other"
-    # The 12 September form offered this and the 19 September one does not.
-    # Kept so an older profile still reads back.
-    prefer_not_to_say = "prefer_not_to_say"
 
 
 class CongenitalSeverity(str, Enum):
@@ -98,43 +83,21 @@ class AcquiredBleedingSeverity(str, Enum):
     unknown = "unknown"
 
 
-class InhibitorStatus(str, Enum):
-    current = "current"
-    previous = "previous"
-    none_known = "none_known"
-    unknown = "unknown"
-
-
-class YesNoUnknown(str, Enum):
-    yes = "yes"
-    no = "no"
-    unknown = "unknown"
-
-
-class TreatmentApproach(str, Enum):
-    factor_replacement = "factor_replacement"
-    non_factor_therapy = "non_factor_therapy"
-    bypassing_therapy = "bypassing_therapy"
-    specialist_plan = "specialist_plan"
-    none = "none"
-
-
 class MedicationItem(BaseModel):
     """One medication as the form records it.
 
-    `dose`, `frequency` and `buffer_days` are prose the frontend composes
-    ("3 times per week", "7 days") and regex-strips again when it reopens a
-    profile for editing. Store them verbatim — reformatting here breaks that
-    round-trip. Everything defaults to "" rather than None because the frontend
-    reads these keys unconditionally.
+    Just what a label says: a product, and how much of it. `dose` is stored as
+    the prose the frontend typed rather than a number, because the unit beside
+    it changes what the number means. Both default to "" rather than None
+    because the frontend reads these keys unconditionally.
+
+    How often it is taken is not here: the tracker's routine owns the schedule,
+    and the supply buffer is one number per profile (`minimum_buffer_days`).
     """
 
     name: str = Field(max_length=120)
     dose: str = Field(default="", max_length=32)
     unit: str = Field(default="", max_length=32)
-    frequency: str = Field(default="", max_length=64)
-    administration: str = Field(default="", max_length=64)
-    buffer_days: str = Field(default="", max_length=32)
 
 
 class MedicationDetails(MedicationItem):
@@ -251,37 +214,35 @@ class CareTeamContact(BaseModel):
 
 
 class ClinicalProfile(BaseModel):
-    """Diagnosis-specific onboarding data, recorded rather than prescribed."""
+    """What the app records about a person, recorded rather than prescribed.
+
+    Only `diagnosis` is required, and onboarding asks for nothing else: the
+    severity and the Medical ID block are filled in from the Medical ID page
+    when the person wants a card, and `minimum_buffer_days` is set beside the
+    routine on the tracker, which is the only screen where it means anything.
+    Every field therefore has to read back as "not recorded" on its own.
+    """
 
     diagnosis: DiagnosisType
-    sex: Sex = Sex.prefer_not_to_say
-    weight_kg: float | None = Field(default=None, gt=0, le=500)
+    #: Severity as recorded at diagnosis, before prophylaxis — one field per
+    #: diagnosis family, and `_clear_inapplicable_fields` nulls the rest.
+    congenital_severity: CongenitalSeverity | None = None
+    factor_xi_deficiency_level: FactorXiDeficiencyLevel | None = None
+    acquired_bleeding_severity: AcquiredBleedingSeverity | None = None
+    #: What is taken. The prophylaxis product names Home's status card; both
+    #: appear on the Medical ID's "current medication" line.
+    prophylactic_medication: MedicationDetails | None = None
+    on_demand_medication: MedicationDetails | None = None
+    #: Days of coverage to keep in reserve before ordering. Collected beside the
+    #: routine; the fold turns it into an order date from the schedule. Lives in
+    #: the JSON column like everything else here, so adding it needed no ALTER.
+    minimum_buffer_days: float | None = Field(default=None, ge=0, le=DAYS_COVER_MAX)
+    # Medical ID. Optional, and in the JSON column, so a row written before
+    # these existed reads back as None and the card says "Not recorded"
+    # instead of inventing a contact.
     date_of_birth: date | None = None
     has_drug_allergies: bool = False
     drug_allergy_details: str | None = Field(default=None, max_length=ALLERGY_DETAILS_MAX)
-    # This is intentionally the diagnostic/pre-prophylaxis result, not a
-    # contemporaneous result that may be normalised by regular treatment.
-    diagnosis_factor_activity_percent: float | None = Field(default=None, ge=0, le=150)
-    diagnosis_test_date: date | None = None
-    congenital_severity: CongenitalSeverity | None = None
-    factor_xi_deficiency_level: FactorXiDeficiencyLevel | None = None
-    acquired_inhibitor_titre_bu_ml: float | None = Field(default=None, ge=0, le=10000)
-    acquired_bleeding_severity: AcquiredBleedingSeverity | None = None
-    inhibitor_status: InhibitorStatus | None = None
-    fix_allergy_or_anaphylaxis: YesNoUnknown | None = None
-    treatment_approach: str | None = Field(default=None, max_length=TREATMENT_APPROACH_MAX)
-    prophylactic_medication: MedicationDetails | None = None
-    minimum_buffer: str | None = Field(default=None, max_length=64)
-    on_demand_medication: MedicationDetails | None = None
-    other_medication: MedicationDetails | None = None
-    medication_reminders: bool = False
-    #: Days of coverage to keep in reserve before ordering. The form collects it
-    #: in days; the fold turns it into an order date from the schedule. Lives in
-    #: the JSON column like everything else here, so adding it needed no ALTER.
-    minimum_buffer_days: float | None = Field(default=None, ge=0, le=DAYS_COVER_MAX)
-    # Medical ID. Optional, and in the JSON column like `routine`, so a row
-    # written before they existed reads back as None and the card says
-    # "Not recorded" instead of inventing a contact.
     blood_type: BloodType | None = None
     emergency_contact: EmergencyContact | None = None
     primary_doctor: CareTeamContact | None = None
@@ -293,48 +254,24 @@ class ClinicalProfile(BaseModel):
             raise ValueError("date_of_birth must not be in the future")
         return v
 
-    @field_validator("treatment_approach")
-    @classmethod
-    def _known_treatments(cls, v: str | None) -> str | None:
-        """A comma-joined multi-select. The single column cannot police itself."""
-        if v is None or not v.strip():
-            return None
-        tokens = [token.strip() for token in v.split(",")]
-        if any(not token for token in tokens):
-            raise ValueError("treatment_approach must not contain blank entries")
-        if len(set(tokens)) != len(tokens):
-            raise ValueError("treatment_approach must not repeat an entry")
-        allowed = {member.value for member in TreatmentApproach}
-        unknown = [token for token in tokens if token not in allowed]
-        if unknown:
-            raise ValueError(f"unknown treatment_approach: {', '.join(unknown)}")
-        # Mirrors the form's toggle: choosing "none" clears everything else.
-        if TreatmentApproach.none.value in tokens and len(tokens) > 1:
-            raise ValueError("treatment_approach 'none' cannot be combined with other options")
-        return ",".join(tokens)
-
     @model_validator(mode="after")
     def _clear_inapplicable_fields(self) -> "ClinicalProfile":
-        """Drop values that do not belong to the chosen diagnosis.
+        """Drop the severity values that do not belong to the chosen diagnosis.
 
-        The form already nulls these, so this only catches a stale value left
-        behind when someone edits their diagnosis. It coerces rather than
-        rejects on purpose: the form's submit button re-checks only step 0, so a
-        422 here would block a submit the UI considers valid, and the frontend
-        renders `detail` only when it is a string — a field-error list shows up
-        as a bare "Request failed (422)".
+        The forms already null these, so this only catches a severity left
+        behind when someone changes their diagnosis afterwards. It coerces
+        rather than rejects on purpose: the two are recorded on different
+        screens, so the new diagnosis can arrive while the old severity is
+        still stored, and a 422 there would block a save the UI considers
+        valid — the frontend renders `detail` only when it is a string, so a
+        field-error list shows up as a bare "Request failed (422)".
         """
-        is_congenital = self.diagnosis in CONGENITAL_DIAGNOSES
-        if not is_congenital:
+        if self.diagnosis not in CONGENITAL_DIAGNOSES:
             self.congenital_severity = None
-            self.inhibitor_status = None
         if self.diagnosis is not DiagnosisType.factor_xi_deficiency:
             self.factor_xi_deficiency_level = None
         if self.diagnosis is not DiagnosisType.acquired_haemophilia:
-            self.acquired_inhibitor_titre_bu_ml = None
             self.acquired_bleeding_severity = None
-        if self.diagnosis not in FACTOR_IX_DIAGNOSES:
-            self.fix_allergy_or_anaphylaxis = None
         return self
 
 
@@ -380,7 +317,7 @@ class ProfileRead(ProfileBase):
 # Tracking events
 #
 # `trackingevent` is one table with a nullable column per kind-specific field,
-# so nothing in the database knows that a refill has no `status`. The
+# so nothing in the database knows that a refill has no `missed_on`. The
 # discriminated union below is the only thing that does. Every field name and
 # every literal is the frontend's `TrackerEntry` / `DoseAmount` in
 # `src/lib/tracker-entries.ts`, so the wire needs no translation layer.
@@ -427,9 +364,15 @@ class RefillCreate(EventCreateBase):
 
 
 class ProphylaxisCreate(EventCreateBase):
-    """The planned preventative dose. Its size always comes from the routine."""
+    """The planned preventative dose.
+
+    Sized by the routine in force on its day unless `vials` says otherwise.
+    History imported from another tracker usually predates any routine here,
+    and a routine-sized dose with no routine charges nothing.
+    """
 
     kind: Literal[EventKind.prophylaxis]
+    vials: int | None = Field(default=None, gt=0, le=VIALS_MAX)
 
 
 class OnDemandCreate(EventCreateBase):
@@ -443,7 +386,12 @@ class FollowUpCreate(EventCreateBase):
 
 
 class MakeupCreate(EventCreateBase):
-    """A dose that made up for a missed one, filed on the day it was taken."""
+    """A planned dose taken late, filed on the day it was actually taken.
+
+    One event, not two: the miss itself is derived (a planned day with no
+    factor use on it), so `missed_on` is the only record that this dose was
+    the one owed for that day.
+    """
 
     kind: Literal[EventKind.makeup]
     missed_on: date
@@ -456,36 +404,8 @@ class MakeupCreate(EventCreateBase):
         return self
 
 
-class MissedCreate(EventCreateBase):
-    """A dose that was due but not taken. Filed on the day it was due.
-
-    `taken_on` and `amount` stay optional even once the status is `taken`:
-    the frontend's flow records the status first, then the day, then the
-    amount, and each step has to be savable on its own.
-    """
-
-    kind: Literal[EventKind.missed]
-    status: MissedStatus = MissedStatus.awaiting
-    taken_on: date | None = None
-    amount: DoseAmountIn | None = None
-
-    @model_validator(mode="after")
-    def _only_a_taken_dose_has_details(self) -> "MissedCreate":
-        if self.status is not MissedStatus.taken:
-            if self.taken_on is not None:
-                raise ValueError(f"a {self.status.value} dose has no taken_on")
-            if self.amount is not None:
-                raise ValueError(f"a {self.status.value} dose has no amount")
-        return self
-
-
 EventCreate = Annotated[
-    RefillCreate
-    | ProphylaxisCreate
-    | OnDemandCreate
-    | FollowUpCreate
-    | MakeupCreate
-    | MissedCreate,
+    RefillCreate | ProphylaxisCreate | OnDemandCreate | FollowUpCreate | MakeupCreate,
     Field(discriminator="kind"),
 ]
 
@@ -496,13 +416,11 @@ def to_event(payload: EventCreate, user_id: int) -> TrackingEvent:
     Because each Create model carries exactly its own fields and forbids
     extras, dumping it can only populate columns belonging to that kind.
     """
-    # Not mode="json": the date columns want `date` objects, and the enums are
+    # Not mode="json": the date columns want `date` objects, and `kind` is
     # unwrapped explicitly so a plain VARCHAR column stores the value rather
     # than whatever str() an enum member happens to produce.
     data = payload.model_dump(exclude={"amount"})
     data["kind"] = payload.kind.value
-    if data.get("status") is not None:
-        data["status"] = data["status"].value
     amount = getattr(payload, "amount", None)
     if amount is not None:
         data["amount_source"] = amount.source.value
@@ -527,12 +445,11 @@ class TrackingEventRead(BaseModel):
     missed_on: date | None = None
     amount_source: AmountSource | None = None
     amount_vials: int | None = None
-    status: MissedStatus | None = None
-    taken_on: date | None = None
     #: What the fold charged the cupboard for this event: positive for a
     #: refill, negative for a dose, zero when the amount is not known. Derived
     #: on every read — a prophylaxis dose is sized by the schedule in force on
-    #: its day — so the tracker shows the figure the supply total actually used.
+    #: its day, or by its own `vials` when it was imported with one — so the
+    #: tracker shows the figure the supply total actually used.
     applied_vials: int = 0
 
 
@@ -748,12 +665,18 @@ class StatusRead(BaseModel):
     last_bleed_on: date | None
     #: The series in force today.
     schedule: ScheduleRead | None
-    #: The first planned dose after the last logged one that nothing has
-    #: settled — logged, or recorded as missed. In the past means overdue.
+    #: The first planned dose after the last logged one with no factor use on
+    #: it. In the past means overdue, and it is also the first entry of
+    #: `missed_doses`.
     next_dose: OccurrenceRead | None
     order: OrderAdvice | None
     dose_state: DoseState
     stock_state: StockState
+    #: Planned days over the last MISSED_LOOKBACK_DAYS, before today, with no
+    #: factor use logged on them — newest first. Derived, never stored: this is
+    #: what "missed dose" means, and logging a dose on one of these days (or a
+    #: makeup naming it) takes it off the list.
+    missed_doses: list[date]
     #: Newest first — the "Recent activity" list.
     recent_events: list[TrackingEventRead]
 
@@ -784,3 +707,99 @@ class SupplyItemRead(BaseModel):
     id: int
     name: str
     quantity: int
+
+
+# ---------------------------------------------------------------------------
+# Imports from another tracker
+#
+# Rows arrive already in the ledger vocabulary (`EventCreate`); the service in
+# `app/importing.py` decides, row by row, what an import would do, and the
+# report below is that decision — the same shape whether it was a dry run or
+# the real thing. `POST /users/{id}/imports` and the MCP tool both return it.
+# ---------------------------------------------------------------------------
+
+IMPORT_ROWS_MAX = 500
+IMPORT_SOURCE_MAX = 120
+
+OnConflict = Literal["skip", "replace"]
+
+
+class ImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: Where the rows came from — a file name, "Claude.ai" — kept on the batch.
+    source: str = Field(default="import", min_length=1, max_length=IMPORT_SOURCE_MAX)
+    #: A row that collides with one already in the ledger: keep the ledger's
+    #: row, or delete it and write this one.
+    on_conflict: OnConflict = "skip"
+    #: Report what would happen and write nothing.
+    dry_run: bool = False
+    events: list[EventCreate] = Field(min_length=1, max_length=IMPORT_ROWS_MAX)
+
+
+class ImportAction(str, Enum):
+    create = "create"
+    replace = "replace"
+    skip = "skip"
+    error = "error"
+
+
+class ImportReason(str, Enum):
+    #: An identical row is already in the ledger, or earlier in this batch.
+    already_present = "already-present"
+    #: Collides with a ledger row: skipped, or replaced it under `on_conflict`.
+    conflict = "conflict"
+    #: Collides with an earlier row of the same batch. Never written.
+    in_batch_conflict = "in-batch-conflict"
+    #: Dated after today in Singapore. The tracker cannot log the future.
+    future_date = "future-date"
+    #: A makeup dose whose `missed_on` day already holds a factor use, so the
+    #: dose it claims to make up was not missed. Counting both would charge the
+    #: cupboard twice for one dose.
+    not_missed = "not-missed"
+
+
+class ImportRowResult(BaseModel):
+    index: int
+    kind: EventKind
+    occurred_on: date
+    action: ImportAction
+    reason: ImportReason | None = None
+    #: Ledger ids this row collides with (skip) or removes (replace).
+    existing_ids: list[int] = Field(default_factory=list)
+    #: For a collision inside the batch, the earlier row's index.
+    conflicts_with_index: int | None = None
+    #: The id it was written under; None on a dry run or when nothing was written.
+    event_id: int | None = None
+    message: str
+
+
+class ImportReport(BaseModel):
+    dry_run: bool
+    #: False on a dry run, and on a real import refused because a row was in
+    #: error — nothing was written either way.
+    written: bool
+    batch_id: int | None = None
+    source: str
+    on_conflict: OnConflict
+    rows_received: int
+    rows_created: int
+    rows_replaced: int
+    rows_skipped: int
+    rows_errored: int
+    rows: list[ImportRowResult]
+    #: The fold after a real import, so the caller can say what changed.
+    status: StatusRead | None = None
+
+
+class ImportBatchRead(BaseModel):
+    id: int
+    source: str
+    created_at: datetime
+    rows_received: int
+    rows_created: int
+    rows_replaced: int
+    rows_skipped: int
+    event_ids: list[int]
+    #: How many of those events still exist — what an undo would remove.
+    events_remaining: int

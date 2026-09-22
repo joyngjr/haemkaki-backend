@@ -3,8 +3,10 @@
 Medication supply tracking for people with haemophilia.
 
 Profiles, an event ledger for the tracker, dose schedules, the values folded
-from those two, and a small supplies list. There is no auth and no seeded data
-— a profile is just a name someone picks on the device.
+from those two, a small supplies list, and a way to bring history in from
+another tracker — as a bulk import, and as an MCP server an assistant can
+call. There is no auth and no seeded data — a profile is just a name someone
+picks on the device.
 
 ## What is here
 
@@ -16,6 +18,8 @@ app/
   models.py       SQLModel tables + the dose/stock/factor/event enums
   schemas.py      Request and response models — the only place states are validated
   services.py     Everything derived from the ledger. Nothing here is stored.
+  importing.py    Bulk import from another tracker: plan, apply, undo, and the rules
+  mcp_server.py   HaemKakis as tools for an assistant — the MCP server at /mcp
   routers/
     users.py      Profile CRUD
     events.py     The tracker's event ledger
@@ -23,6 +27,7 @@ app/
     schedules.py  Dose schedules — recurring series and moved occurrences
     plans.py      Plan Ahead — temporary changes to the routine over a date range
     supplies.py   The tracker's Inventory card — a counted list, replaced whole
+    imports.py    Import batches — dry run, write, list, undo
 ```
 
 Interactive docs at `/docs`.
@@ -52,18 +57,23 @@ Interactive docs at `/docs`.
 | `DELETE` | `/users/{id}/plans/{p}`      | remove a plan; doses logged while it ran stay     |
 | `GET`    | `/users/{id}/supplies`       | the Inventory card's list, in display order       |
 | `PUT`    | `/users/{id}/supplies`       | replace that list wholesale (`[]` clears it)      |
+| `POST`   | `/users/{id}/imports`        | import up to 500 rows; `dry_run` reports without writing; 422 with the report if any row is in error |
+| `GET`    | `/users/{id}/imports`        | the import batches, newest first                  |
+| `DELETE` | `/users/{id}/imports/{b}`    | undo a batch: remove the events it created        |
+| `POST`   | `/mcp`                       | the MCP server (Streamable HTTP, stateless, JSON) — see below |
 
 `dose_state` is one of `covered` / `low` / `veryLow`, `stock_state` one of
 `wellStocked` / `moderate` / `low`, and `factor_type` one of `VIII` / `IX` /
 `XI` / `acquired` / `unknown` — spelled exactly as the frontend's `DoseState`,
 `StockState` and `FactorType` unions.
 
-A profile also carries a nullable `clinical_profile` object holding what the
-onboarding form collects: diagnosis and its severity, sex, weight, date of
-birth, drug allergies, treatment approach, a medication section for each of
-prophylaxis / on-demand / other, the ordering buffer in days
-(`minimum_buffer_days`), and the Medical ID fields — `blood_type`,
-`emergency_contact` and `primary_doctor`, every one optional. Its fields mirror
+A profile also carries a nullable `clinical_profile` object. Only `diagnosis`
+is required in it; three screens own the rest and each preserves the others'
+fields when it saves. Onboarding records the diagnosis and
+`prophylactic_medication`; the tracker's routine records the ordering buffer in
+days (`minimum_buffer_days`); and the Medical ID card records the severity for
+the diagnosis, `date_of_birth`, the drug allergies, `on_demand_medication`,
+`blood_type`, `emergency_contact` and `primary_doctor`. Its fields mirror
 the frontend's `ClinicalProfile` and `MedicationDetails` types in
 `src/lib/api.ts` one for one, so renaming a field here is a breaking change.
 
@@ -84,11 +94,13 @@ they existed comes back with them as `null` and the card says "Not recorded".
 
 ## The event ledger
 
-`POST /users/{id}/events` takes one of six kinds, spelled exactly as the
+`POST /users/{id}/events` takes one of five kinds, spelled exactly as the
 frontend's `TrackerEntry` in `src/lib/tracker-entries.ts` — `refill`,
-`prophylaxis`, `on-demand`, `follow-up`, `makeup`, `missed` — with an
-`occurred_on` day. The table is one row per event with a nullable column per
-kind-specific field, so the database cannot know that a refill has no `status`.
+`prophylaxis`, `on-demand`, `follow-up`, `makeup` — with an `occurred_on` day.
+A missed dose is not among them: it is the absence of a use on a planned day,
+and `/status` derives it. The table is one row per event with a nullable column
+per kind-specific field, so the database cannot know that a refill has no
+`missed_on`.
 The discriminated union in `app/schemas.py` is the only thing that does. **Build
 rows with `to_event(...)`, never `TrackingEvent(...)`** — `extra="forbid"` plus a
 per-kind `Literal` is the whole safety mechanism.
@@ -112,8 +124,9 @@ Three behaviours there are easy to break:
 - Malformed rows are logged and skipped, not coerced. `event.vials or 0` would
   make a bad row invisible instead of countable.
 - Every event read carries `applied_vials`, what the fold charged for it. A
-  prophylaxis dose is sized by the schedule in force on its day, so this is the
-  only place the tracker learns how big one was.
+  prophylaxis dose is sized by the schedule in force on its day — or by its own
+  `vials`, which an import sets when the source recorded the amount — so this
+  is the only place the tracker learns how big one was.
 
 `/status` also reports `last_bleed_on`: the most recent `on-demand` dose. There
 is no bleed table — on-demand use is the app's own marker for a treated bleed,
@@ -142,14 +155,19 @@ move; the day it moves to must not already hold a planned dose.
 A series is a plan, not a record. Taking the dose is still a `prophylaxis`
 event on the day, so deleting a series leaves the history intact, and the
 calendar shows a planned dose until its day is **settled** — by a dose of any
-kind (the tracker keeps one factor use per day) or a missed-dose record.
+kind (the tracker keeps one factor use per day), or by a `makeup` dose on a
+later day naming it. A planned day already past that nothing settled is a
+**missed dose**, derived rather than recorded.
 
 From the series and the ledger, `/status` folds:
 
 - `next_dose` — the first planned dose after the last logged dose that nothing
-  has settled. It stays put, and reads as overdue, until it is logged, moved or
-  recorded as missed; searching from the last dose rather than from the start
-  means someone who began logging late is not nagged about everything before.
+  has settled. It stays put, and reads as overdue, until it is logged or moved;
+  searching from the last dose rather than from the start means someone who
+  began logging late is not nagged about everything before.
+- `missed_doses` — planned days over the last 30, before today, with no factor
+  use on them, newest first. Backdating the dose takes a day off the list, and
+  so does a `makeup` naming it.
 - `runs_out_on` and `days_cover` — the planned doses walked forward against the
   vials on hand; the first one the cupboard cannot supply is the run-out date.
   Stock that lasts the whole `FORECAST_DAYS` (a year) reads as 365 days and no
@@ -192,6 +210,68 @@ than per-item routes and ids the card would have to invent before the server
 answered. Ids therefore change on every write; the frontend never relies on
 them.
 
+## Importing from another tracker
+
+Two ways in, both through `app/importing.py`, so the rules are enforced once.
+
+`POST /users/{id}/imports` takes up to 500 rows in the ledger vocabulary and
+answers with a verdict per row — `create`, `replace`, `skip` or `error` — and
+the counts. `dry_run: true` reports without writing. A real import with any
+row in error writes nothing and answers 422 with the same report as `detail`;
+skipped rows are not errors. What was written is recorded in `importbatch`, so
+`GET` lists the batches and `DELETE /users/{id}/imports/{b}` removes exactly the
+events a batch created (rows it replaced are gone for good).
+
+The rules are the tracker's own per-day invariants, which the API never
+enforced before: one refill and one factor use (prophylaxis, on-demand,
+follow-up, makeup) per day; no day after today in Singapore; a row identical to one already logged is skipped as
+`already-present`, so re-running the same sheet is idempotent. `on_conflict`
+(`skip`, the default, or `replace`) only governs collisions with rows already
+in the ledger — two rows in one batch that collide are an error whatever it
+says, because two uses on one day have to be merged by whoever read the sheet.
+
+### The MCP server
+
+`app/mcp_server.py` exposes the same operations as tools for an assistant, over
+the Model Context Protocol at `POST /mcp` (Streamable HTTP, stateless, JSON
+responses). Connect Claude.ai or Claude Desktop with **Customize → Connectors →
+Add custom connector** and the public URL (`https://<railway-host>/mcp`, no
+sign-in), or Claude Code with
+
+```bash
+claude mcp add --transport http haemkakis https://<railway-host>/mcp
+```
+
+then hand the assistant the spreadsheet. Nothing on the server parses a file:
+the assistant maps the rows, asks the user how many IU a vial holds when the
+sheet is in IU, calls `import_events` with `dry_run=true`, shows the verdicts,
+and only after the user confirms calls it again for real. The tools are
+`list_profiles`, `get_profile`, `list_events`, `set_routine`, `import_events`,
+`list_imports` and `undo_import`, plus an `import_tracker` prompt with the
+procedure. Their descriptions are the assistant's whole user interface; keep
+them exact.
+
+There is no authentication, exactly like the REST API: anyone with the URL can
+read and change every profile on the server.
+
+Three things in `main.py` are deliberate. The transport is registered as an
+exact route with `app.add_route("/mcp", ...)` rather than mounted: a `Mount`
+only matches `/mcp/...` and answers a bare `POST /mcp` with a 307 that not every
+MCP client follows. DNS-rebinding protection is switched off explicitly: the
+SDK's default allow-list is localhost-only, which passes in Docker and rejects
+Railway's `Host` header with 421. And `sse-starlette` is pinned to 3.0.0, the
+last release without a hard `starlette>=0.49.1` floor, because
+`fastapi==0.115.6` holds starlette below 0.42; bumping FastAPI lifts the pin.
+
+To poke the server by hand, every request needs `Content-Type: application/json`
+and `Accept: application/json, text/event-stream`:
+
+```bash
+curl -s -X POST http://localhost:8000/mcp \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
 ## Run locally
 
 ```bash
@@ -203,7 +283,10 @@ uvicorn app.main:app --reload
 
 Falls back to a local SQLite file (`hackitrx.db`) when `DATABASE_URL` is unset.
 Nothing is seeded, so create a profile in `/docs` first — every
-`/users/{id}/...` route 404s until one exists.
+`/users/{id}/...` route 404s until one exists. The MCP server is then at
+`http://localhost:8000/mcp`, which Claude Code can use directly
+(`claude mcp add --transport http haemkakis http://localhost:8000/mcp`);
+Claude.ai needs the deployed address.
 
 Lint: `ruff check .`. This project does not have tests — verify by exercising
 the endpoints in `/docs`.
@@ -227,4 +310,4 @@ Railway builds from `Dockerfile` and deploys on every push to `main`. Set
 `DATABASE_URL` (Railway injects it when a Postgres service is attached) and
 `CORS_ORIGINS` (the Vercel production domain; preview URLs are matched by
 regex). The Dockerfile copies only `app/`, so everything that ships must live
-there.
+there. Once deployed, the MCP server is at `https://<railway-host>/mcp`.

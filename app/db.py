@@ -16,6 +16,7 @@ from app.config import get_settings
 from app.models import (  # noqa: F401  (registers the tables)
     DosePlan,
     DoseSchedule,
+    ImportBatch,
     ScheduleException,
     SupplyItem,
     TrackingEvent,
@@ -43,6 +44,7 @@ def create_db_and_tables() -> None:
         with engine.begin() as connection:
             connection.execute(text(_ADD_CLINICAL_PROFILE_COLUMN))
     migrate_legacy_routines()
+    drop_legacy_missed_events()
 
 
 def get_session() -> Generator[Session, None, None]:
@@ -92,3 +94,18 @@ def migrate_legacy_routines() -> None:
             user.clinical_profile_json = json.dumps(stored)
             session.add(user)
         session.commit()
+
+
+def drop_legacy_missed_events() -> None:
+    """One-off data cleanup, in the spirit of the migration above.
+
+    A missed dose used to be a row of its own (`kind='missed'`, with a
+    `status` and a `taken_on`). It is derived now — a planned day with no
+    factor use on it — so the rows are redundant: they charged nothing, and
+    the fold reproduces exactly the same days from the routine. Left in place
+    they would fail to validate against `EventKind`, so they go on the way
+    past. The dose a missed one was made up by is a `makeup` row of its own
+    and is untouched.
+    """
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM trackingevent WHERE kind = 'missed'"))

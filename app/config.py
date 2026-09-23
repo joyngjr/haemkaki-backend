@@ -8,13 +8,17 @@ class Settings(BaseSettings):
 
     database_url: str = ""
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
+    # Medical ID translation. The public instance needs a key from
+    # portal.libretranslate.com; a self-hosted one usually does not.
+    libretranslate_url: str = "https://libretranslate.com"
+    libretranslate_api_key: str = ""
 
     @property
     def sqlalchemy_url(self) -> str:
         """Normalise Railway's DATABASE_URL for psycopg 3, or fall back to SQLite."""
         url = self.database_url.strip()
         if not url:
-            return "sqlite:///./hackitrx.db"
+            return "sqlite:///./haemkaki.db"
         if url.startswith("postgres://"):
             url = url.replace("postgres://", "postgresql://", 1)
         if url.startswith("postgresql://"):

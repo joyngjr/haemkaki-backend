@@ -34,7 +34,8 @@ class DoseState(str, Enum):
 
 
 class StockState(str, Enum):
-    """How many vials are at home — drives the shelf. Independent of dose."""
+    """How many vials are at home, against the buffer — drives the shelf.
+    Independent of dose."""
 
     well_stocked = "wellStocked"
     moderate = "moderate"
@@ -107,8 +108,8 @@ class TrackingEvent(SQLModel, table=True):
     user_id: int = Field(foreign_key="user.id", index=True)
     kind: str
     occurred_on: date = Field(index=True)
-    #: refill / on-demand / follow-up, and a prophylaxis dose that was imported
-    #: with its own count. A prophylaxis dose without one defers to the routine.
+    #: Vials: refill / on-demand / follow-up, and a prophylaxis dose logged with
+    #: its own count. A prophylaxis dose without one defers to the routine.
     vials: int | None = None
     #: makeup -> the planned day whose dose this one made up for.
     missed_on: date | None = None

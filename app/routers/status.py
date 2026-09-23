@@ -29,8 +29,9 @@ def status_read(session: Session, user: User, as_of: date | None = None) -> Stat
     balance it produced rather than sending the client back for it.
     """
     clinical_profile = _clinical_profile(user)
-    buffer_days = clinical_profile.minimum_buffer_days if clinical_profile else None
-    supply = services.build_supply(session, user.id, buffer_days, as_of)
+    buffer_vials = clinical_profile.minimum_buffer_vials if clinical_profile else None
+    order_day = clinical_profile.order_day_of_month if clinical_profile else None
+    supply = services.build_supply(session, user.id, buffer_vials, as_of, order_day=order_day)
     return StatusRead(
         as_of=supply.as_of,
         vials_on_hand=supply.vials_on_hand,
@@ -44,7 +45,7 @@ def status_read(session: Session, user: User, as_of: date | None = None) -> Stat
         # The two OrderAdvice types share their field names on purpose.
         order=OrderAdvice(**asdict(supply.order)) if supply.order else None,
         dose_state=services.dose_state(supply),
-        stock_state=services.stock_state(supply.vials_on_hand),
+        stock_state=services.stock_state(supply),
         missed_doses=supply.missed_doses,
         recent_events=[
             event_read(event, supply.applied.get(event.id or 0, 0))

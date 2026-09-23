@@ -1,4 +1,4 @@
-# HackitRx — API
+# HaemKaki — API
 
 Medication supply tracking for people with haemophilia.
 
@@ -19,7 +19,7 @@ app/
   schemas.py      Request and response models — the only place states are validated
   services.py     Everything derived from the ledger. Nothing here is stored.
   importing.py    Bulk import from another tracker: plan, apply, undo, and the rules
-  mcp_server.py   HaemKakis as tools for an assistant — the MCP server at /mcp
+  mcp_server.py   HaemKaki as tools for an assistant — the MCP server at /mcp
   routers/
     users.py      Profile CRUD
     events.py     The tracker's event ledger
@@ -70,8 +70,10 @@ Interactive docs at `/docs`.
 A profile also carries a nullable `clinical_profile` object. Only `diagnosis`
 is required in it; three screens own the rest and each preserves the others'
 fields when it saves. Onboarding records the diagnosis and
-`prophylactic_medication`; the tracker's routine records the ordering buffer in
-days (`minimum_buffer_days`); and the Medical ID card records the severity for
+`prophylactic_medication`, whose `dose` is a vial count (the only unit the forms
+take, and what seeds the tracker's routine); the tracker's routine records the
+vials to keep at home (`minimum_buffer_vials`) and the day of the month they
+order on (`order_day_of_month`); and the Medical ID card records the severity for
 the diagnosis, `date_of_birth`, the drug allergies, `on_demand_medication`,
 `blood_type`, `emergency_contact` and `primary_doctor`. Its fields mirror
 the frontend's `ClinicalProfile` and `MedicationDetails` types in
@@ -81,9 +83,10 @@ It is stored as one JSON column and validated in `app/schemas.py` — the column
 cannot police which fields belong to which diagnosis, so that module is the only
 thing that does. Two things there are easy to break by accident:
 
-- Medication `dose`, `frequency` and `buffer_days` are **prose** the frontend
-  composes (`"3 times per week"`, `"7 days"`) and strips again when it reopens a
-  profile for editing. Store them verbatim; reformatting breaks that round-trip.
+- Medication `dose` is **prose** the frontend typed (`"2"`) and reads back
+  when it reopens a profile for editing, and as the usual dose size when it
+  parses as a whole number of vials. Store it verbatim; reformatting breaks
+  that round-trip.
 - Fields that do not apply to the chosen diagnosis are **coerced to null, not
   rejected**. The form re-checks only its first step before submitting, so a 422
   would block a submit the UI considers valid.
@@ -125,8 +128,9 @@ Three behaviours there are easy to break:
   make a bad row invisible instead of countable.
 - Every event read carries `applied_vials`, what the fold charged for it. A
   prophylaxis dose is sized by the schedule in force on its day — or by its own
-  `vials`, which an import sets when the source recorded the amount — so this
-  is the only place the tracker learns how big one was.
+  `vials`, which the tracker sets when the user changed the amount (or an import,
+  when the source recorded it) — so this is the only place the tracker learns
+  how big one was.
 
 `/status` also reports `last_bleed_on`: the most recent `on-demand` dose. There
 is no bleed table — on-demand use is the app's own marker for a treated bleed,
@@ -172,13 +176,21 @@ From the series and the ledger, `/status` folds:
   vials on hand; the first one the cupboard cannot supply is the run-out date.
   Stock that lasts the whole `FORECAST_DAYS` (a year) reads as 365 days and no
   run-out date.
-- `order` — `by_on` is the run-out date less the profile's `minimum_buffer_days`
-  (`due` once that day has arrived), and `vials` covers the doses from the
-  run-out date through the next `ORDER_COVERS_DAYS` (30) plus the buffer, less
-  what is left. The working comes with it — `covers_until`, `planned_doses`,
-  `planned_vials`, `leftover_vials`, `buffer_days` — so the card can show how
-  the number was reached. No schedule, no order advice: there is no usage to
-  forecast.
+- `order` — `by_on` is the profile's next `order_day_of_month` (the last day
+  of a month too short for it; `on_order_day` is true), or an earlier day when
+  the walk has the stock falling below `minimum_buffer_vials` or unable to
+  cover a dose before then — today, if it already has (`due`). With no order
+  day set, only the stock sets it. `vials` covers the planned doses after
+  `by_on` through `covers_until` — the following order day, or
+  `ORDER_COVERS_DAYS` (30) on with none set — plus the buffer, less what is
+  left after `by_on`'s dose. Only logged doses have left the cupboard: a
+  planned day already past with nothing logged is a miss, and is never counted
+  as used. The working comes with it — `covers_until`, `planned_doses`,
+  `planned_vials`, `leftover_vials`, `buffer_vials` — so the card can show how the
+  number was reached. No schedule, no order advice: there is no usage to
+  forecast. `stock_state` reads the same buffer: `low` under it, `moderate`
+  under twice it, and with none set the routine's dose size stands in (two
+  and five doses).
 
 ### Plans
 
@@ -194,11 +206,13 @@ when it walks the calendar, so the next dose, the run-out date and the order
 advice follow them through the same code path. A plan with a rhythm plans its
 doses even without a routine.
 
-The routine used to live in `clinical_profile.routine` inside the JSON column.
-`migrate_legacy_routines()` in `app/db.py` converts any row still carrying that
-key at startup — a complete routine becomes a series, the buffer moves to
-`minimum_buffer_days`, the key is removed so it cannot run twice — in the same
-one-off spirit as the column add above it.
+Every amount is a whole number of vials (`trackingevent.vials` and
+`amount_vials`, `doseschedule.vials`, `doseplan.vials`, `user.vials_on_hand`),
+capped by `VIALS_MAX` in `app/schemas.py`. The API never converts IU: a source
+that records IU is converted by whoever enters it, at the vial size they know.
+The buffer used to be days of cover (`minimum_buffer_days` in the profile
+JSON); it is a vial count now, and a profile still carrying the old key reads
+back with no buffer set until the routine flow stores one.
 
 ## Supplies
 
@@ -239,12 +253,30 @@ Add custom connector** and the public URL (`https://<railway-host>/mcp`, no
 sign-in), or Claude Code with
 
 ```bash
-claude mcp add --transport http haemkakis https://<railway-host>/mcp
+claude mcp add --transport http haemkaki https://<railway-host>/mcp
 ```
 
-then hand the assistant the spreadsheet. Nothing on the server parses a file:
+ChatGPT connects too, through developer mode (Plus, Pro, Business, Enterprise
+and Edu, on the web):
+
+1. **Settings → Apps & Connectors → Advanced settings**, turn on **Developer
+   mode**.
+2. Back in **Apps & Connectors**, **Create**: any name, the same
+   `https://<railway-host>/mcp` URL, authentication **No authentication**, and
+   tick that you trust the application.
+3. In a new chat, open **+ → Developer mode** and switch the HaemKaki
+   connector on for that chat.
+
+ChatGPT asks before running any tool not marked read-only, so each
+`import_events`, `set_routine` and `undo_import` call waits for a click. It does
+not offer MCP prompts, so `import_tracker` is Claude-only there; the tool
+descriptions carry the same rules, and "import this into HaemKaki, dry run
+first" is enough to start. Both Claude.ai and ChatGPT connect from their own
+servers, so neither can reach `localhost` — use the deployed URL.
+
+Then hand the assistant the spreadsheet. Nothing on the server parses a file:
 the assistant maps the rows, asks the user how many IU a vial holds when the
-sheet is in IU, calls `import_events` with `dry_run=true`, shows the verdicts,
+sheet records IU, calls `import_events` with `dry_run=true`, shows the verdicts,
 and only after the user confirms calls it again for real. The tools are
 `list_profiles`, `get_profile`, `list_events`, `set_routine`, `import_events`,
 `list_imports` and `undo_import`, plus an `import_tracker` prompt with the
@@ -281,12 +313,12 @@ cp .env.example .env          # works as-is for local dev
 uvicorn app.main:app --reload
 ```
 
-Falls back to a local SQLite file (`hackitrx.db`) when `DATABASE_URL` is unset.
+Falls back to a local SQLite file (`haemkaki.db`) when `DATABASE_URL` is unset.
 Nothing is seeded, so create a profile in `/docs` first — every
 `/users/{id}/...` route 404s until one exists. The MCP server is then at
 `http://localhost:8000/mcp`, which Claude Code can use directly
-(`claude mcp add --transport http haemkakis http://localhost:8000/mcp`);
-Claude.ai needs the deployed address.
+(`claude mcp add --transport http haemkaki http://localhost:8000/mcp`);
+Claude.ai and ChatGPT need the deployed address.
 
 Lint: `ruff check .`. This project does not have tests — verify by exercising
 the endpoints in `/docs`.
@@ -300,7 +332,7 @@ the endpoints in `/docs`.
 
 There are no migrations — tables are created from the models at startup, and
 `create_all()` never `ALTER`s an existing one. A new table appears on the next
-start; a changed table needs the local `hackitrx.db` deleted (or the table
+start; a changed table needs the local `haemkaki.db` deleted (or the table
 dropped in Railway's Postgres console) to take effect. Anything that can live in
 `clinical_profile_json` should, for exactly that reason.
 

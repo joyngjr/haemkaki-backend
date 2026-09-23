@@ -3,7 +3,7 @@
 One row per logged action, scoped to a profile. No authentication, for the
 same reason as `users.py`: the profile id in the path is the whole identity.
 
-Everything derived from these rows — vials on hand, the last dose, the supply
+Everything derived from these rows — factor on hand, the last dose, the supply
 history — is folded in `app/services.py` on every read. Nothing here stores a
 balance, because users backdate and edit constantly and a running total would
 apply a backdated event at the end instead of in its place.

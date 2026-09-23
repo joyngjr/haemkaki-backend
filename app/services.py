@@ -17,15 +17,18 @@ Three questions, answered in one pass because they share their inputs:
   stored; backdating the dose, or logging a `makeup` that names the day,
   makes it stop being one;
 * how long the cupboard lasts — the planned doses walked forward against the
-  stock, which gives the run-out date and, less the buffer, the order date.
+  stock, which gives the run-out date and, before it, the day the stock falls
+  below the profile's buffer;
+* when to order and how much — on the profile's monthly order day, or sooner
+  if the stock falls below the buffer or runs out before it.
 
 The dose state is a *schedule estimate*, not a measured factor level and not
 pharmacokinetics. It is the same claim the frontend already makes for its
 cover figure (`CoverStatus.source: "scheduleEstimate"` in `src/lib/home-data.ts`).
 """
 
+import calendar
 import logging
-import math
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -72,11 +75,12 @@ DOSE_KINDS = frozenset(
 #: Above this fraction of the interval elapsed, the last dose is still holding.
 COVERED_FRACTION = 0.66
 
-STOCK_WELL_STOCKED = 5
-STOCK_MODERATE = 2
+#: With no buffer set, the shelf is read in doses of the routine's size.
+STOCK_WELL_STOCKED_DOSES = 5
+STOCK_MODERATE_DOSES = 2
 
-#: An order covers this many days of doses past the day stock runs out, plus
-#: the buffer. A month is what a household order looks like.
+#: With no monthly order day set, an order covers this many days of doses
+#: past the day it is placed, and then the buffer on top.
 ORDER_COVERS_DAYS = 30
 
 #: How far back the fold looks for missed doses. Home shows a handful of recent
@@ -109,12 +113,15 @@ class OrderAdvice:
     by_on: date
     vials: int
     due: bool
+    #: Whether `by_on` is the profile's regular monthly order day, rather than
+    #: an earlier one forced by the stock falling below the buffer.
+    on_order_day: bool
     #: The working behind `vials`, so the card can show it. See `schemas.OrderAdvice`.
     covers_until: date
     planned_doses: int
     planned_vials: int
     leftover_vials: int
-    buffer_days: int
+    buffer_vials: int
 
 
 @dataclass
@@ -135,6 +142,10 @@ class SupplySnapshot:
     missed_doses: list[date] = field(default_factory=list)
     runs_out_on: date | None = None
     days_cover: int = 0
+    #: The vials the profile keeps at home; zero when none is set.
+    buffer_vials: int = 0
+    #: The day of the month the profile orders on, 1–31; None when not set.
+    order_day: int | None = None
     order: OrderAdvice | None = None
     events: list[TrackingEvent] = field(default_factory=list)
     #: Event id -> the vials the fold charged for it.
@@ -187,6 +198,18 @@ def is_tick(rule: Recurrence, day: date) -> bool:
     if not rule.interval_days:
         return False
     return (day - rule.start_on).days % rule.interval_days == 0
+
+
+def next_order_day(from_day: date, day_of_month: int) -> date:
+    """The first `day_of_month` on or after `from_day`, clamped to the last day
+    of a month too short to have it — the 31st is the 30th in April."""
+    year, month = from_day.year, from_day.month
+    while True:
+        last = calendar.monthrange(year, month)[1]
+        candidate = date(year, month, min(day_of_month, last))
+        if candidate >= from_day:
+            return candidate
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
 
 
 def _days(since: date, until: date) -> Iterator[date]:
@@ -386,7 +409,7 @@ def event_vials(event: TrackingEvent, dose_vials: int) -> int:
             return 0
         return event.vials
     if event.kind == EventKind.prophylaxis.value:
-        # An imported dose may say how big it was; otherwise the routine sizes it.
+        # A dose may say how big it was; otherwise the routine sizes it.
         return -(event.vials or dose_vials)
     if event.kind in {EventKind.on_demand.value, EventKind.follow_up.value}:
         if not event.vials:
@@ -421,8 +444,10 @@ def applied_vials(
 def build_supply(
     session: Session,
     user_id: int,
-    buffer_days: float | None = None,
+    buffer_vials: int | None = None,
     as_of: date | None = None,
+    *,
+    order_day: int | None = None,
 ) -> SupplySnapshot:
     """Fold the ledger into a vial count, then walk the schedule forward from it."""
     as_of = as_of or today_sgt()
@@ -431,7 +456,11 @@ def build_supply(
     exceptions = load_exceptions(session, user_id)
     plans = load_plans(session, user_id)
     snapshot = SupplySnapshot(
-        as_of=as_of, events=events, schedule=active_schedule(schedules, as_of)
+        as_of=as_of,
+        events=events,
+        schedule=active_schedule(schedules, as_of),
+        buffer_vials=buffer_vials or 0,
+        order_day=order_day,
     )
 
     total = 0
@@ -500,8 +529,19 @@ def build_supply(
     snapshot.missed_doses = sorted(missed, reverse=True)
 
     # The forecast: planned doses from today against what is in the cupboard.
-    # Today's dose, if already logged, was charged by the fold above.
+    # Only what is logged has left it — the fold above charged every logged
+    # dose, today's included — so the walk takes the doses still to come and
+    # nothing else. A planned day already past with nothing logged on it is a
+    # miss, not factor used, and never comes out of the stock.
+    #
+    # Two days come out of the walk: the first on which the stock falls below
+    # the buffer, and the first planned dose it cannot supply at all, which is
+    # when it runs out. `supplied` records the stock after each dose it can.
+    buffer = snapshot.buffer_vials
     stock = total
+    low_on = as_of if stock < buffer else None
+    last_supplied_on = as_of
+    supplied: list[tuple[date, int]] = []
     for occurrence in occurrences(
         schedules, exceptions, plans, as_of, as_of + timedelta(days=FORECAST_DAYS)
     ):
@@ -511,43 +551,88 @@ def build_supply(
             snapshot.runs_out_on = occurrence.on
             break
         stock -= occurrence.vials
-    if snapshot.runs_out_on is None:
-        snapshot.days_cover = FORECAST_DAYS
-        return snapshot
-    snapshot.days_cover = (snapshot.runs_out_on - as_of).days
+        supplied.append((occurrence.on, stock))
+        last_supplied_on = occurrence.on
+        if low_on is None and stock < buffer:
+            low_on = occurrence.on
+    snapshot.days_cover = (
+        (snapshot.runs_out_on - as_of).days if snapshot.runs_out_on else FORECAST_DAYS
+    )
 
-    buffer = math.ceil(buffer_days or 0)
-    by_on = snapshot.runs_out_on - timedelta(days=buffer)
-    covered_until = snapshot.runs_out_on + timedelta(days=ORDER_COVERS_DAYS + buffer)
+    # When to order: the regular monthly order day, unless the stock gives out
+    # before it — under the buffer, or unable to cover a dose, in which case
+    # the order is placed after the last dose it can. With no order day set,
+    # only the stock decides, and stock that lasts the year and stays above
+    # the buffer needs no advice.
+    triggers = [low_on] if low_on else []
+    if snapshot.runs_out_on:
+        triggers.append(last_supplied_on)
+    early = min(triggers) if triggers else None
+    regular = next_order_day(as_of, order_day) if order_day else None
+    if regular and (early is None or regular <= early):
+        by_on, on_order_day = regular, True
+    elif early:
+        by_on, on_order_day = early, False
+    else:
+        return snapshot
+
+    # How much: the stock left after the doses up to and including the order
+    # day, set against the doses after it through the next regular order day
+    # — or a month on, with none set — plus the buffer to keep at home.
+    covers_until = (
+        next_order_day(by_on + timedelta(days=1), order_day)
+        if order_day
+        else by_on + timedelta(days=ORDER_COVERS_DAYS)
+    )
+    # `by_on` never passes the last dose the stock can supply, so this is
+    # always a real balance, never a shortfall.
+    leftover = next((left for on, left in reversed(supplied) if on <= by_on), total)
     planned = [
         occurrence
         for occurrence in occurrences(
-            schedules, exceptions, plans, snapshot.runs_out_on, covered_until
+            schedules, exceptions, plans, by_on + timedelta(days=1), covers_until
         )
         if occurrence.on not in settled
     ]
     needed = sum(occurrence.vials for occurrence in planned)
     snapshot.order = OrderAdvice(
         by_on=by_on,
-        vials=max(0, needed - stock),
+        vials=max(0, needed + buffer - leftover),
         due=by_on <= as_of,
-        covers_until=covered_until,
+        on_order_day=on_order_day,
+        covers_until=covers_until,
         planned_doses=len(planned),
         planned_vials=needed,
-        leftover_vials=stock,
-        buffer_days=buffer,
+        leftover_vials=leftover,
+        buffer_vials=buffer,
     )
     return snapshot
 
 
-def stock_state(vials: int) -> StockState:
-    """How full the shelf looks. Thresholds, not a forecast — the forecast is
-    `days_cover`, and it needs a schedule to exist."""
-    if vials >= STOCK_WELL_STOCKED:
+def stock_state(snapshot: SupplySnapshot) -> StockState:
+    """How full the shelf looks.
+
+    Read against the buffer when one is set — under it is low, under twice it
+    is moderate — and otherwise against the routine's dose size, so a shelf
+    with fewer than two doses on it reads low whatever the numbers say.
+    Thresholds, not a forecast: the forecast is `days_cover`, and it needs a
+    schedule to exist.
+    """
+    vials = snapshot.vials_on_hand
+    if vials <= 0:
+        return StockState.low
+    if snapshot.buffer_vials:
+        low, moderate = snapshot.buffer_vials, snapshot.buffer_vials * 2
+    elif snapshot.schedule:
+        low = snapshot.schedule.vials * STOCK_MODERATE_DOSES
+        moderate = snapshot.schedule.vials * STOCK_WELL_STOCKED_DOSES
+    else:
         return StockState.well_stocked
-    if vials >= STOCK_MODERATE:
+    if vials < low:
+        return StockState.low
+    if vials < moderate:
         return StockState.moderate
-    return StockState.low
+    return StockState.well_stocked
 
 
 def dose_state(snapshot: SupplySnapshot) -> DoseState:

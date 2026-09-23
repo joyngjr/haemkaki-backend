@@ -1,4 +1,4 @@
-# Switch to HaemKakis without retyping a thing
+# Switch to HaemKaki without retyping a thing
 
 **Infosheet — content baseline for design. Everything here is verified against
 the shipping code; wording and hierarchy are open, the field names and rules
@@ -15,7 +15,7 @@ history, and with it the numbers that make a supply tracker worth using.
 
 ## What we do instead
 
-HaemKakis has no import form, because you should not have to fill one in.
+HaemKaki has no import form, because you should not have to fill one in.
 It exposes itself as an **MCP server**: you connect an AI assistant — Claude —
 to your tracker, hand it your file however it already looks, and it does the
 mapping, shows you a preview, and writes only when you say yes.
@@ -25,7 +25,7 @@ mapping, shows you a preview, and writes only when you say yes.
 | Step               | What you do                                              | What happens                                                                   |
 | ------------------ | -------------------------------------------------------- | ------------------------------------------------------------------------------ |
 | **1. Connect**     | Paste one address into Claude, once.                      | Claude can now see your tracker. No account, no sign-in, no export file.        |
-| **2. Hand it over** | Attach your spreadsheet. Say _"Import this into HaemKakis."_ | Claude reads your columns, converts IU to vials, and shows you a preview table. |
+| **2. Hand it over** | Attach your spreadsheet. Say _"Import this into HaemKaki."_ | Claude reads your columns, converts IU to vials, and shows you a preview table. |
 | **3. Confirm**      | Read the preview. Say yes.                                | Your history is in. Home and the Tracker are populated the next time they open. |
 
 Nothing is written before you confirm. If it comes out wrong, one sentence
@@ -59,7 +59,7 @@ Date         Entry               Amount
 20/03/2026   Missed
 ```
 
-What lands in HaemKakis (at 500 IU per vial):
+What lands in HaemKaki (at 500 IU per vial):
 
 ```
 2026-03-12   prophylaxis   2 vials
@@ -74,7 +74,7 @@ What lands in HaemKakis (at 500 IU per vial):
 ## The five entry types
 
 Every row becomes one of five. Dates are calendar days, `YYYY-MM-DD`, Singapore
-time — there is no time of day. Amounts are whole **vials**, 1–99.
+time — there is no time of day. Amounts are whole **vials**, 1–999.
 
 | Type          | Required fields                      | What it means                                          |
 | ------------- | ------------------------------------ | ------------------------------------------------------ |
@@ -104,7 +104,7 @@ weekdays), and vials per dose. Claude can set it during the same conversation.
 It sizes your past prophylaxis doses, drives the next-dose reminder, and is what
 makes missed days visible at all.
 
-**Today's shelf count — one row.** HaemKakis counts vials from what you log:
+**Today's shelf count — one row.** HaemKaki counts vials from what you log:
 deliveries in, doses out, starting at zero. If your old sheet never tracked
 stock, say how many vials are in the fridge right now and Claude logs it as a
 refill dated today. From that moment days of cover, the run-out date and the

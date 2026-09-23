@@ -59,14 +59,15 @@ def _profile_response(session: Session, user: User) -> dict:
     profiles, hundreds of events — that is the price of not storing a balance.
     """
     clinical_profile = _clinical_profile(user)
-    buffer_days = clinical_profile.minimum_buffer_days if clinical_profile else None
-    supply = services.build_supply(session, user.id, buffer_days)
+    buffer_vials = clinical_profile.minimum_buffer_vials if clinical_profile else None
+    order_day = clinical_profile.order_day_of_month if clinical_profile else None
+    supply = services.build_supply(session, user.id, buffer_vials, order_day=order_day)
     return {
         "id": user.id,
         "name": user.name,
         "factor_type": user.factor_type,
         "dose_state": services.dose_state(supply),
-        "stock_state": services.stock_state(supply.vials_on_hand),
+        "stock_state": services.stock_state(supply),
         "vials_on_hand": supply.vials_on_hand,
         "days_cover": supply.days_cover,
         "clinical_profile": clinical_profile.model_dump(mode="json") if clinical_profile else None,

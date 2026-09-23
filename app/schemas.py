@@ -28,7 +28,10 @@ from app.models import (
 )
 
 NAME_MAX = 60
-VIALS_MAX = 99
+# Amounts are whole vials, three digits: a quarter's worth of factor can arrive as one
+# refill. The app never converts IU — whoever enters an IU figure does, at the vial size
+# they know.
+VIALS_MAX = 999
 DAYS_COVER_MAX = 365
 
 # The allergy picker has no selection limit and the catalog holds 187 drugs, so
@@ -87,17 +90,19 @@ class MedicationItem(BaseModel):
     """One medication as the form records it.
 
     Just what a label says: a product, and how much of it. `dose` is stored as
-    the prose the frontend typed rather than a number, because the unit beside
-    it changes what the number means. Both default to "" rather than None
-    because the frontend reads these keys unconditionally.
+    the prose the frontend typed rather than a number; the forms count vials —
+    the only unit they offer — and the tracker reads the prophylactic dose back
+    as the usual dose size when it parses as a whole number of them. Both
+    default rather than None because the frontend reads these keys
+    unconditionally.
 
     How often it is taken is not here: the tracker's routine owns the schedule,
-    and the supply buffer is one number per profile (`minimum_buffer_days`).
+    and the supply buffer is one number per profile (`minimum_buffer_vials`).
     """
 
     name: str = Field(max_length=120)
     dose: str = Field(default="", max_length=32)
-    unit: str = Field(default="", max_length=32)
+    unit: str = Field(default="vials", max_length=32)
 
 
 class MedicationDetails(MedicationItem):
@@ -218,7 +223,7 @@ class ClinicalProfile(BaseModel):
 
     Only `diagnosis` is required, and onboarding asks for nothing else: the
     severity and the Medical ID block are filled in from the Medical ID page
-    when the person wants a card, and `minimum_buffer_days` is set beside the
+    when the person wants a card, and `minimum_buffer_vials` is set beside the
     routine on the tracker, which is the only screen where it means anything.
     Every field therefore has to read back as "not recorded" on its own.
     """
@@ -233,10 +238,13 @@ class ClinicalProfile(BaseModel):
     #: appear on the Medical ID's "current medication" line.
     prophylactic_medication: MedicationDetails | None = None
     on_demand_medication: MedicationDetails | None = None
-    #: Days of coverage to keep in reserve before ordering. Collected beside the
-    #: routine; the fold turns it into an order date from the schedule. Lives in
-    #: the JSON column like everything else here, so adding it needed no ALTER.
-    minimum_buffer_days: float | None = Field(default=None, ge=0, le=DAYS_COVER_MAX)
+    #: Vials to keep at home. Collected beside the routine; the fold says to order
+    #: once the stock falls below it, and walks the schedule to find the day it
+    #: will. Lives in the JSON column like everything else here.
+    minimum_buffer_vials: int | None = Field(default=None, ge=0, le=VIALS_MAX)
+    #: The day of the month the person orders on, asked beside the buffer. The
+    #: fold advises ordering on it; a month too short for it uses its last day.
+    order_day_of_month: int | None = Field(default=None, ge=1, le=31)
     # Medical ID. Optional, and in the JSON column, so a row written before
     # these existed reads back as None and the card says "Not recorded"
     # instead of inventing a contact.
@@ -309,6 +317,9 @@ class ProfileRead(ProfileBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    #: Folded from the ledger on every read, so unlike the writable column it
+    #: is not capped: a few refills on the shelf can add up past VIALS_MAX.
+    vials_on_hand: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -327,9 +338,9 @@ class ProfileRead(ProfileBase):
 class DoseAmountIn(BaseModel):
     """How much factor a made-up dose used.
 
-    `routine` defers to the profile's prophylaxis dosage and `pending` means
-    the user has not answered yet, so neither carries a vial count — folding
-    an amount the user never gave would invent supply.
+    `routine` defers to the routine's dose size and `pending` means the user
+    has not answered yet, so neither carries an amount — folding an amount the
+    user never gave would invent supply.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -340,9 +351,9 @@ class DoseAmountIn(BaseModel):
     @model_validator(mode="after")
     def _vials_match_source(self) -> "DoseAmountIn":
         if self.source is AmountSource.custom and self.vials is None:
-            raise ValueError("a custom amount needs vials")
+            raise ValueError("a custom amount needs a vial count")
         if self.source is not AmountSource.custom and self.vials is not None:
-            raise ValueError(f"a {self.source.value} amount must not carry vials")
+            raise ValueError(f"a {self.source.value} amount must not carry a vial count")
         return self
 
 
@@ -445,10 +456,10 @@ class TrackingEventRead(BaseModel):
     missed_on: date | None = None
     amount_source: AmountSource | None = None
     amount_vials: int | None = None
-    #: What the fold charged the cupboard for this event: positive for a
+    #: The vials the fold charged the cupboard for this event: positive for a
     #: refill, negative for a dose, zero when the amount is not known. Derived
     #: on every read — a prophylaxis dose is sized by the schedule in force on
-    #: its day, or by its own `vials` when it was imported with one — so the
+    #: its day, or by its own `vials` when it was logged with one — so the
     #: tracker shows the figure the supply total actually used.
     applied_vials: int = 0
 
@@ -616,28 +627,33 @@ class MoveOccurrence(BaseModel):
 
 
 class OrderAdvice(BaseModel):
-    """When to order and how much, from stock and the schedule alone.
+    """When to order and how much, from stock, the schedule, the buffer and the
+    monthly order day.
 
-    `by_on` is the run-out date less the profile's buffer days; `due` says it
-    has already arrived. `vials` covers the doses from the run-out date through
-    the next month plus the buffer, less whatever is left in the cupboard. The
-    rest is the working, so the card can show how the number was reached.
+    `by_on` is the profile's next monthly order day (`on_order_day`), or an
+    earlier day when the stock is forecast to fall below the buffer or run out
+    before it — today, if it already has. Without an order day only the stock
+    sets it. `due` says it has arrived. `vials` covers the planned doses after
+    `by_on` through `covers_until` and leaves the buffer on the shelf, less
+    what will still be there after `by_on`'s dose. Only logged doses have left
+    the cupboard: a missed dose is never counted as used. The rest is the
+    working, so the card can show how the number was reached.
     """
 
     by_on: date
     vials: int
     due: bool
-    #: The last day the order is sized to cover: the run-out date plus a month
-    #: plus the buffer.
+    on_order_day: bool
+    #: The end of the window the order is sized for: the following monthly
+    #: order day, or `ORDER_COVERS_DAYS` after `by_on` with none set.
     covers_until: date
-    #: The doses planned from the run-out date through `covers_until`, and the
-    #: vials they use.
+    #: The doses planned after `by_on` through `covers_until`, and their vials.
     planned_doses: int
     planned_vials: int
-    #: What will still be in the cupboard on the run-out date — too little for
-    #: that day's dose, but it counts towards the order.
+    #: What will still be in the cupboard after `by_on`'s dose.
     leftover_vials: int
-    buffer_days: int
+    #: The vials the profile keeps at home; zero when none is set.
+    buffer_vials: int
 
 
 class StatusRead(BaseModel):

@@ -9,7 +9,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from app.config import get_settings
 from app.db import create_db_and_tables
 from app.mcp_server import mcp
-from app.routers import events, imports, plans, schedules, status, supplies, users
+from app.routers import events, imports, plans, schedules, status, supplies, translate, users
 
 logging.basicConfig(level=logging.INFO)
 settings = get_settings()
@@ -26,7 +26,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="HackitRx API",
+    title="HaemKaki API",
     version="0.1.0",
     description="Medication supply tracking for people with haemophilia.",
     lifespan=lifespan,
@@ -50,6 +50,7 @@ app.include_router(supplies.router)
 app.include_router(schedules.router)
 app.include_router(plans.router)
 app.include_router(imports.router)
+app.include_router(translate.router)
 
 # Build the Streamable HTTP transport once — this is what makes `session_manager`
 # exist — and register its ASGI endpoint as an exact route. `app.mount("/mcp", …)`

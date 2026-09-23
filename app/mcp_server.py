@@ -1,4 +1,4 @@
-"""HaemKakis as tools for an assistant: the MCP server.
+"""HaemKaki as tools for an assistant: the MCP server.
 
 Served at `/mcp` by `main.py` over Streamable HTTP. A user connects Claude.ai,
 Claude Desktop or Claude Code to it, hands the assistant a spreadsheet, and
@@ -48,7 +48,7 @@ from app.schemas import (
 )
 
 INSTRUCTIONS = (
-    "HaemKakis tracks factor supply for people with haemophilia: refills in, doses out, a "
+    "HaemKaki tracks factor supply for people with haemophilia: refills in, doses out, a "
     "prophylaxis routine, and the vials on hand derived from that ledger.\n\n"
     "Rules for writing:\n"
     "- Amounts are whole VIALS, never IU. If a source records IU, ask the user how many IU "
@@ -75,7 +75,7 @@ INSTRUCTIONS = (
     "time it opens. undo_import reverses a batch."
 )
 
-mcp = MCPServer("HaemKakis", version="0.1.0", instructions=INSTRUCTIONS)
+mcp = MCPServer("HaemKaki", version="0.1.0", instructions=INSTRUCTIONS)
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 WRITES = ToolAnnotations(destructive_hint=True, idempotent_hint=False, open_world_hint=False)
@@ -127,9 +127,9 @@ def _validation_message(exc: ValidationError) -> str:
     title="List profiles",
     description=(
         "Every profile on this server, oldest first, with id, name, factor type, vials on "
-        "hand, days of cover and the clinical profile (its medications list product, dose "
-        "and unit, which helps when a source records IU). Call this first: every other tool "
-        "takes a profile_id."
+        "hand, days of cover and the clinical profile (its prophylactic medication carries "
+        "the usual dose in vials, which helps when a source only says a dose was taken). Call "
+        "this first: every other tool takes a profile_id."
     ),
     annotations=READ_ONLY,
 )
@@ -166,7 +166,7 @@ def get_profile(profile_id: int) -> ProfileStatusRead:
     title="List ledger events",
     description=(
         "The ledger, oldest first, up to 500 rows, optionally between since and until "
-        "(YYYY-MM-DD, inclusive). Each row carries applied_vials: what the supply count "
+        "(YYYY-MM-DD, inclusive). Each row carries applied_vials: the vials the supply count "
         "charged for it (positive for a refill, negative for a dose, zero when the amount is "
         "unknown). Check what is already logged before importing; verify afterwards."
     ),
@@ -316,14 +316,14 @@ def undo_import(profile_id: int, batch_id: int) -> UndoRead:
 @mcp.prompt(
     name="import_tracker",
     title="Import from another tracker",
-    description="The procedure for moving a spreadsheet or another app's export into HaemKakis.",
+    description="The procedure for moving a spreadsheet or another app's export into HaemKaki.",
 )
 def import_tracker(
     profile_id: Annotated[str, Field(description="The profile id to import into, if known.")] = "",
 ) -> str:
     target = f"profile {profile_id}" if profile_id else "the profile the user names (list_profiles)"
     return (
-        f"Import the user's tracker history into HaemKakis for {target}.\n\n"
+        f"Import the user's tracker history into HaemKaki for {target}.\n\n"
         "1. Ask for the file or the pasted rows if you do not have them yet.\n"
         "2. Work out which columns hold the date, the type of entry, the amount and any "
         "notes. Say what you found and what you are unsure about.\n"

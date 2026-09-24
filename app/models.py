@@ -87,6 +87,13 @@ class AmountSource(str, Enum):
     custom = "custom"
 
 
+class BleedNature(str, Enum):
+    """How an on-demand bleed started. Mirrors the frontend's `BleedNature`."""
+
+    spontaneous = "spontaneous"
+    traumatic = "traumatic"
+
+
 class TrackingEvent(SQLModel, table=True):
     """One logged action on one day.
 
@@ -111,6 +118,9 @@ class TrackingEvent(SQLModel, table=True):
     #: Vials: refill / on-demand / follow-up, and a prophylaxis dose logged with
     #: its own count. A prophylaxis dose without one defers to the routine.
     vials: int | None = None
+    #: on-demand -> whether the bleed was spontaneous or traumatic. Null on
+    #: doses logged before the question existed and on imported history.
+    bleed_nature: str | None = None
     #: makeup -> the planned day whose dose this one made up for.
     missed_on: date | None = None
     amount_source: str | None = None

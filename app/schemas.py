@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.models import (
     AmountSource,
+    BleedNature,
     DoseState,
     EventKind,
     FactorType,
@@ -387,8 +388,16 @@ class ProphylaxisCreate(EventCreateBase):
 
 
 class OnDemandCreate(EventCreateBase):
+    """A dose given for a bleed — the app's own marker for one.
+
+    `bleed_nature` is optional on the wire so history imported from another
+    tracker, which rarely records it, still loads; the tracker's own flow
+    always asks.
+    """
+
     kind: Literal[EventKind.on_demand]
     vials: int = Field(gt=0, le=VIALS_MAX)
+    bleed_nature: BleedNature | None = None
 
 
 class FollowUpCreate(EventCreateBase):
@@ -432,6 +441,8 @@ def to_event(payload: EventCreate, user_id: int) -> TrackingEvent:
     # than whatever str() an enum member happens to produce.
     data = payload.model_dump(exclude={"amount"})
     data["kind"] = payload.kind.value
+    if isinstance(data.get("bleed_nature"), BleedNature):
+        data["bleed_nature"] = data["bleed_nature"].value
     amount = getattr(payload, "amount", None)
     if amount is not None:
         data["amount_source"] = amount.source.value
@@ -453,6 +464,7 @@ class TrackingEventRead(BaseModel):
     kind: EventKind
     occurred_on: date
     vials: int | None = None
+    bleed_nature: BleedNature | None = None
     missed_on: date | None = None
     amount_source: AmountSource | None = None
     amount_vials: int | None = None

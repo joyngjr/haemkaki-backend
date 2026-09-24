@@ -101,9 +101,11 @@ they existed comes back with them as `null` and the card says "Not recorded".
 frontend's `TrackerEntry` in `src/lib/tracker-entries.ts` — `refill`,
 `prophylaxis`, `on-demand`, `follow-up`, `makeup` — with an `occurred_on` day.
 A missed dose is not among them: it is the absence of a use on a planned day,
-and `/status` derives it. The table is one row per event with a nullable column
-per kind-specific field, so the database cannot know that a refill has no
-`missed_on`.
+and `/status` derives it. An `on-demand` row may carry `bleed_nature`
+(`spontaneous` or `traumatic`); the tracker always asks, imported history
+usually cannot say, so it is optional on the wire and null when unknown. The
+table is one row per event with a nullable column per kind-specific field, so
+the database cannot know that a refill has no `missed_on`.
 The discriminated union in `app/schemas.py` is the only thing that does. **Build
 rows with `to_event(...)`, never `TrackingEvent(...)`** — `extra="forbid"` plus a
 per-kind `Literal` is the whole safety mechanism.

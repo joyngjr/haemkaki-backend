@@ -3,11 +3,13 @@
 The browser never calls LibreTranslate itself: the public instance needs an
 API key, and a key shipped in the frontend bundle is a key anyone can read.
 
-The card sends its fixed English copy — section titles, field labels and the
-diagnosis and severity vocabulary — never the person's own details, so nothing
-identifying leaves for the third party. That copy is the same for everyone, so
-each translation is kept in memory and a language costs one upstream call per
-process, not one per view.
+The card sends the English it does not translate by hand: most of its fixed
+copy, and what the person wrote that it translates — the emergency contact's
+relationship and the allergy note. Never a name, a phone number or a drug.
+That free text is health information, so `LIBRETRANSLATE_URL` should point at
+a self-hosted instance, as it does on Railway; the public libretranslate.com
+is a third party. Each translation is kept in memory, so the fixed copy costs
+one upstream call per language per process, not one per view.
 """
 
 import logging
@@ -18,6 +20,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
+from app.schemas import ALLERGY_DETAILS_MAX
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +31,10 @@ router = APIRouter(prefix="/translate", tags=["translate"])
 # Burmese, Khmer or Lao.
 TargetLanguage = Literal["zh-Hans", "zh-Hant", "ms", "id", "th", "vi", "tl", "ja", "ko", "hi"]
 
-# The card's copy is a few dozen strings; anything much bigger is not the card.
+# The card's copy is a few dozen strings, and its longest text is an allergy
+# note; anything much bigger is not the card.
 _MAX_TEXTS = 100
-_MAX_TEXT_LENGTH = 200
+_MAX_TEXT_LENGTH = ALLERGY_DETAILS_MAX
 _CACHE_LIMIT = 5_000
 
 _cache: dict[tuple[str, str], str] = {}

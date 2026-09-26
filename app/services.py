@@ -11,7 +11,7 @@ Three questions, answered in one pass because they share their inputs:
   sized by the schedule (or the plan) in force on its day, and reset to the
   counted figure by any stock count;
 * what is planned — the schedule's occurrences, with moved ones moved and a
-  plan's dates following the plan instead, and from those the next dose that
+  plan's picked days standing in for them over its dates, and from those the next dose that
   nothing has settled;
 * which doses were missed — planned days already past with no factor use on
   them. A miss is the absence of an event, so it is derived here rather than
@@ -48,6 +48,7 @@ from app.models import (
     ScheduleException,
     StockState,
     TrackingEvent,
+    parse_dates,
     parse_weekdays,
 )
 from app.schemas import FORECAST_DAYS
@@ -160,7 +161,7 @@ class SupplySnapshot:
 
 
 # ---------------------------------------------------------------------------
-# Recurrence — what a series and a plan have in common
+# Recurrence — a series' rhythm
 # ---------------------------------------------------------------------------
 
 
@@ -176,10 +177,6 @@ class Recurrence(Protocol):
 def js_weekday(day: date) -> int:
     """0 = Sunday … 6 = Saturday, as the frontend's `Date.getDay()` numbers them."""
     return (day.weekday() + 1) % 7
-
-
-def has_frequency(rule: Recurrence) -> bool:
-    return bool(rule.interval_days or rule.weekdays)
 
 
 def cycle_days(rule: Recurrence) -> int:
@@ -286,10 +283,15 @@ def plan_on(plans: Sequence[DosePlan], day: date) -> DosePlan | None:
     return next((plan for plan in plans if plan.start_on <= day <= plan.end_on), None)
 
 
-def frequency_overridden(plans: Sequence[DosePlan], day: date) -> bool:
-    """Whether a plan replaces the routine's rhythm on `day`."""
+def plan_days(plan: DosePlan) -> list[date]:
+    """The days a plan puts a dose on, or none when it keeps the routine's."""
+    return parse_dates(plan.dose_dates) or []
+
+
+def days_overridden(plans: Sequence[DosePlan], day: date) -> bool:
+    """Whether a plan replaces the routine's dose days on `day`."""
     plan = plan_on(plans, day)
-    return plan is not None and has_frequency(plan)
+    return plan is not None and bool(plan.dose_dates)
 
 
 def active_schedule(schedules: list[DoseSchedule], day: date) -> DoseSchedule | None:
@@ -325,12 +327,12 @@ def occurrences(
     A moved dose shows on its new day and not on its cycle day, so a dose moved
     into the window from outside it is included and one moved out is not.
 
-    A plan with its own rhythm replaces the series' doses for its dates — a
-    cycle day inside it is not planned, moved or not — and puts its own there
-    instead, counted from the plan's first day. A plan with only a dose size
-    leaves the days alone and resizes them.
+    A plan with its own dose days replaces the series' doses for its dates —
+    a cycle day inside it is not planned, moved or not — and puts a dose on
+    each day it picked instead. A plan with only a dose size leaves the days
+    alone and resizes them.
     """
-    overrides = [plan for plan in plans if has_frequency(plan)]
+    overrides = [plan for plan in plans if plan.dose_dates]
 
     def replaced(day: date) -> bool:
         return any(plan.start_on <= day <= plan.end_on for plan in overrides)
@@ -376,7 +378,9 @@ def occurrences(
             )
     for plan in overrides:
         assert plan.id is not None
-        for tick in _ticks(plan, since, min(until, plan.end_on)):
+        for tick in plan_days(plan):
+            if not since <= tick <= until:
+                continue
             found.append(
                 Occurrence(
                     on=tick,
@@ -515,9 +519,9 @@ def build_supply(
             snapshot.last_bleed_on = event.occurred_on
 
     # Anything that puts doses on the calendar: the series, and any plan with
-    # a rhythm of its own. A plan that only resizes doses plans nothing alone.
-    rules: list[Recurrence] = [*schedules, *(plan for plan in plans if has_frequency(plan))]
-    if not rules:
+    # dose days of its own. A plan that only resizes doses plans nothing alone.
+    overrides = [plan for plan in plans if plan.dose_dates]
+    if not schedules and not overrides:
         return snapshot
 
     # A day is settled by a factor use on it — the tracker keeps one per day,
@@ -535,12 +539,19 @@ def build_supply(
     # series start means someone who began logging late is not nagged about
     # every dose before that; searching past `as_of` means an unlogged dose
     # stays "next" — and reads as overdue — until it is logged or moved.
+    #
+    # A plan's days are picked rather than rhythmic, so the gap to the next one
+    # can be anything up to the plan's length: the search runs to the end of
+    # any plan still ahead, not just two cycles.
     since = (
         snapshot.last_dose_on + timedelta(days=1)
         if snapshot.last_dose_on
-        else min(rule.start_on for rule in rules)
+        else min([*(s.start_on for s in schedules), *(plan_days(plan)[0] for plan in overrides)])
     )
-    reach = max(as_of, since) + timedelta(days=2 * max(cycle_days(rule) for rule in rules))
+    reach = max(as_of, since) + timedelta(
+        days=2 * max((cycle_days(s) for s in schedules), default=7)
+    )
+    reach = max([reach, *(plan.end_on for plan in overrides)])
     for occurrence in occurrences(schedules, exceptions, plans, since, reach):
         if occurrence.on not in settled:
             snapshot.next_dose = occurrence

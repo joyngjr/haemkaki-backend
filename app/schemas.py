@@ -25,6 +25,7 @@ from app.models import (
     FactorType,
     StockState,
     TrackingEvent,
+    parse_dates,
     parse_weekdays,
 )
 
@@ -512,8 +513,9 @@ def event_read(event: TrackingEvent, applied_vials: int) -> TrackingEventRead:
 # edited in place. Moving one occurrence is an exception keyed by the date the
 # cycle put it on. A permanent shift is a new series replacing the old.
 #
-# A plan is a temporary change to the routine over a date range. It carries the
-# same two frequency fields, both optional, plus an optional dose size.
+# A plan is a temporary change to the routine over a date range: the exact days
+# a dose is due, a dose size, or both. Its days are picked on the calendar
+# rather than following a rhythm.
 # ---------------------------------------------------------------------------
 
 
@@ -532,8 +534,7 @@ class RecurrenceIn(BaseModel):
     """How often a dose is due: every `interval_days`, or on fixed `weekdays`.
 
     Weekdays are numbered as the frontend's `Date.getDay()` — 0 = Sunday to
-    6 = Saturday — so the calendar never translates. Both may be left unset
-    only where the subclass allows it (a plan that changes just the dose).
+    6 = Saturday — so the calendar never translates.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -587,14 +588,25 @@ def schedule_read(schedule) -> ScheduleRead:
     )
 
 
-class PlanCreate(RecurrenceIn):
-    """A temporary change to the routine between two dates, inclusive: a
-    different frequency, a different dose, or both. Whatever is left unset
-    stays as the routine has it. Plans may not overlap; the router checks."""
+class PlanCreate(BaseModel):
+    """A temporary change to the routine between two dates, inclusive: the
+    days a dose is due, a different dose, or both. Whatever is left unset
+    stays as the routine has it. Plans may not overlap; the router checks.
+
+    `dose_dates` are picked one by one and must fall inside the range; they
+    replace the routine's doses there, so a day left out has no dose."""
+
+    model_config = ConfigDict(extra="forbid")
 
     start_on: date
     end_on: date
+    dose_dates: list[date] | None = Field(default=None, min_length=1, max_length=PLAN_DAYS_MAX)
     vials: int | None = Field(default=None, gt=0, le=VIALS_MAX)
+
+    @field_validator("dose_dates")
+    @classmethod
+    def _sorted_dates(cls, v: list[date] | None) -> list[date] | None:
+        return sorted(set(v)) if v is not None else None
 
     @model_validator(mode="after")
     def _a_change_over_a_range(self) -> "PlanCreate":
@@ -602,8 +614,12 @@ class PlanCreate(RecurrenceIn):
             raise ValueError("a plan cannot end before it starts")
         if (self.end_on - self.start_on).days >= PLAN_DAYS_MAX:
             raise ValueError(f"a plan runs at most {PLAN_DAYS_MAX} days; longer is a new routine")
-        if not self.has_frequency and self.vials is None:
-            raise ValueError("a plan changes the frequency, the dose, or both")
+        if self.dose_dates and not (
+            self.start_on <= self.dose_dates[0] and self.dose_dates[-1] <= self.end_on
+        ):
+            raise ValueError("every dose date must fall inside the plan's dates")
+        if self.dose_dates is None and self.vials is None:
+            raise ValueError("a plan changes the dose days, the dose, or both")
         return self
 
 
@@ -611,19 +627,17 @@ class PlanRead(BaseModel):
     id: int
     start_on: date
     end_on: date
-    interval_days: int | None
-    weekdays: list[int] | None
+    dose_dates: list[date] | None
     vials: int | None
 
 
 def plan_read(plan) -> PlanRead:
-    """From a `models.DosePlan`, same column encoding as a series."""
+    """From a `models.DosePlan`, whose dose dates are one comma-separated column."""
     return PlanRead(
         id=plan.id,
         start_on=plan.start_on,
         end_on=plan.end_on,
-        interval_days=plan.interval_days,
-        weekdays=parse_weekdays(plan.weekdays),
+        dose_dates=parse_dates(plan.dose_dates),
         vials=plan.vials,
     )
 
@@ -633,7 +647,7 @@ class OccurrenceRead(BaseModel):
     is where the cycle put it, and identifies it for moving.
 
     A dose belongs to the series (`schedule_id`) or to a plan that replaces
-    the series' frequency for its dates (`plan_id`). Only a series' dose can
+    the series' dose days for its dates (`plan_id`). Only a series' dose can
     be moved; a plan's doses follow the plan.
     """
 

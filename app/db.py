@@ -42,6 +42,11 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
         "bleed_nature",
         "ALTER TABLE trackingevent ADD COLUMN bleed_nature VARCHAR",
     ),
+    (
+        "doseplan",
+        "dose_dates",
+        "ALTER TABLE doseplan ADD COLUMN dose_dates VARCHAR",
+    ),
 )
 
 

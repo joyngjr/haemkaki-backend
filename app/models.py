@@ -166,6 +166,20 @@ def format_weekdays(days: list[int] | None) -> str | None:
     return ",".join(str(day) for day in sorted(set(days)))
 
 
+def parse_dates(text: str | None) -> list[date] | None:
+    """A plan's `dose_dates` column as a list — "2026-10-01,2026-10-03"; None stays None."""
+    if not text:
+        return None
+    return [date.fromisoformat(day) for day in text.split(",")]
+
+
+def format_dates(days: list[date] | None) -> str | None:
+    """A date list as the column stores it, sorted and without repeats."""
+    if not days:
+        return None
+    return ",".join(day.isoformat() for day in sorted(set(days)))
+
+
 class DoseSchedule(SQLModel, table=True):
     """A recurring prophylaxis series: from `start_on`, either every
     `interval_days` or on the fixed `weekdays`, `vials` per dose.
@@ -196,19 +210,22 @@ class DosePlan(SQLModel, table=True):
     """A temporary change to the routine between two dates, inclusive — a
     trip, an illness, a procedure. "Plan Ahead" on the tracker.
 
-    A plan with a frequency replaces the routine's doses for its dates and
-    counts from its first day; a plan with only `vials` keeps the routine's
-    days and changes their size. Whatever is None stays as the routine has it.
+    A plan with `dose_dates` replaces the routine's doses for its dates with
+    exactly the days picked; a plan with only `vials` keeps the routine's days
+    and changes their size. Whatever is None stays as the routine has it.
     Plans do not overlap; the router enforces it.
+
+    The deployed table still has `interval_days` and `weekdays` columns from
+    when a plan carried a rhythm. They are nullable and nothing reads them.
     """
 
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="user.id", index=True)
     start_on: date
     end_on: date
-    #: Same encoding as `DoseSchedule`; both None means "frequency as usual".
-    interval_days: int | None = None
-    weekdays: str | None = None
+    #: The days a dose is due, comma-separated ISO dates inside the plan's
+    #: range. None means "dose days as usual".
+    dose_dates: str | None = None
     #: Vials per dose while the plan runs. None means "dosage as usual".
     vials: int | None = None
     created_at: datetime = Field(default_factory=utcnow)

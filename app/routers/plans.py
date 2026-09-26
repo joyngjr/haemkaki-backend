@@ -1,10 +1,10 @@
 """Plans — temporary changes to the routine over a date range.
 
-"Plan Ahead" on the tracker: a trip, an illness, a procedure. A plan carries a
-different rhythm, a different dose size, or both, for its dates only; the fold
-in `app/services.py` applies it when it walks the calendar, so the planned
-doses, the run-out date and the order advice all follow it without anything
-being copied into the series.
+"Plan Ahead" on the tracker: a trip, an illness, a procedure. A plan carries
+the exact days a dose is due, a different dose size, or both, for its dates
+only; the fold in `app/services.py` applies it when it walks the calendar, so
+the planned doses, the run-out date and the order advice all follow it without
+anything being copied into the series.
 
 Plans do not overlap — two changes for one day would have to be reconciled by
 something, and nothing here is that something. A plan that only resizes doses
@@ -18,7 +18,7 @@ from sqlmodel import Session
 
 from app import services
 from app.db import get_session
-from app.models import DosePlan, format_weekdays, utcnow
+from app.models import DosePlan, format_dates, utcnow
 from app.routers.users import _get_or_404
 from app.schemas import PlanCreate, PlanRead, plan_read
 
@@ -48,8 +48,7 @@ def _reject_overlap(
 def _apply(plan: DosePlan, payload: PlanCreate) -> DosePlan:
     plan.start_on = payload.start_on
     plan.end_on = payload.end_on
-    plan.interval_days = payload.interval_days
-    plan.weekdays = format_weekdays(payload.weekdays)
+    plan.dose_dates = format_dates(payload.dose_dates)
     plan.vials = payload.vials
     return plan
 

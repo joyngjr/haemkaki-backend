@@ -201,17 +201,17 @@ From the series and the ledger, `/status` folds:
 
 ### Plans
 
-"Plan Ahead" is a `doseplan` row: a date range plus any of a rhythm
-(`interval_days` or `weekdays`, encoded as on a series) and a `vials` size.
-Inside its dates a plan with a rhythm replaces the series' doses — a cycle day
-that falls inside it is not planned, moved or not — and puts its own there,
-counted from the plan's first day; a plan with only `vials` keeps the series'
-days and resizes them. A prophylaxis dose logged inside a plan is charged the
-plan's size. Plans do not overlap (422), and a plan's dose cannot be moved: it
-follows the plan. Nothing is copied into the series — the fold applies plans
-when it walks the calendar, so the next dose, the run-out date and the order
-advice follow them through the same code path. A plan with a rhythm plans its
-doses even without a routine.
+"Plan Ahead" is a `doseplan` row: a date range plus any of `dose_dates` (the
+exact days a dose is due, picked on the calendar, all inside the range) and a
+`vials` size. Inside its dates a plan with `dose_dates` replaces the series'
+doses — a cycle day that falls inside it is not planned, moved or not — and
+puts one on each picked day instead; a plan with only `vials` keeps the
+series' days and resizes them. A prophylaxis dose logged inside a plan is
+charged the plan's size. Plans do not overlap (422), and a plan's dose cannot
+be moved: it follows the plan. Nothing is copied into the series — the fold
+applies plans when it walks the calendar, so the next dose, the run-out date
+and the order advice follow them through the same code path. A plan with
+`dose_dates` plans its doses even without a routine.
 
 Every amount is a whole number of vials (`trackingevent.vials` and
 `amount_vials`, `doseschedule.vials`, `doseplan.vials`, `user.vials_on_hand`),

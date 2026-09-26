@@ -134,11 +134,9 @@ def move_occurrence(
     """
     schedule = _schedule_or_404(session, user_id, schedule_id)
     plans = services.load_plans(session, user_id)
-    # A cycle day inside a plan with its own rhythm is not a planned dose: the
-    # plan's doses stand in for it, and they follow the plan rather than moving.
-    if not services.is_tick(schedule, original_on) or services.frequency_overridden(
-        plans, original_on
-    ):
+    # A cycle day inside a plan with its own dose days is not a planned dose:
+    # the plan's doses stand in for it, and they follow the plan rather than moving.
+    if not services.is_tick(schedule, original_on) or services.days_overridden(plans, original_on):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "No dose is planned on that day")
     if payload.moved_to == original_on:
         raise HTTPException(

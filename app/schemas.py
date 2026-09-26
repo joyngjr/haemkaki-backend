@@ -33,6 +33,9 @@ NAME_MAX = 60
 # refill. The app never converts IU — whoever enters an IU figure does, at the vial size
 # they know.
 VIALS_MAX = 999
+# A vial's labelled strength. Products come in 250 to 4000 IU; the cap only
+# catches a typo, and nothing multiplies by it — it is printed on the Medical ID.
+IU_PER_VIAL_MAX = 10_000
 DAYS_COVER_MAX = 365
 
 # The allergy picker has no selection limit and the catalog holds 187 drugs, so
@@ -99,11 +102,16 @@ class MedicationItem(BaseModel):
 
     How often it is taken is not here: the tracker's routine owns the schedule,
     and the supply buffer is one number per profile (`minimum_buffer_vials`).
+
+    `iu_per_vial` is the strength on the vial's label, recorded so a responder
+    reading the Medical ID knows what "2 vials" means. It is shown, never
+    converted: every amount the app counts stays in vials.
     """
 
     name: str = Field(max_length=120)
     dose: str = Field(default="", max_length=32)
     unit: str = Field(default="vials", max_length=32)
+    iu_per_vial: int | None = Field(default=None, ge=1, le=IU_PER_VIAL_MAX)
 
 
 class MedicationDetails(MedicationItem):

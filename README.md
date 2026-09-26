@@ -72,8 +72,9 @@ is required in it; three screens own the rest and each preserves the others'
 fields when it saves. Onboarding records the diagnosis and
 `prophylactic_medication`, whose `dose` is a vial count (the only unit the forms
 take, and what seeds the tracker's routine); the tracker's routine records the
-vials to keep at home (`minimum_buffer_vials`) and the day of the month they
-order on (`order_day_of_month`); and the Medical ID card records the severity for
+vials to keep at home for bleeds, on top of the routine (`minimum_buffer_vials`),
+and the day of the month they order next month's supply (`order_day_of_month`);
+and the Medical ID card records the severity for
 the diagnosis, `date_of_birth`, the drug allergies, `on_demand_medication`,
 `blood_type`, `emergency_contact` and `primary_doctor`. Its fields mirror
 the frontend's `ClinicalProfile` and `MedicationDetails` types in
@@ -182,14 +183,18 @@ From the series and the ledger, `/status` folds:
   of a month too short for it; `on_order_day` is true), or an earlier day when
   the walk has the stock falling below `minimum_buffer_vials` or unable to
   cover a dose before then — today, if it already has (`due`). With no order
-  day set, only the stock sets it. `vials` covers the planned doses after
-  `by_on` through `covers_until` — the following order day, or
-  `ORDER_COVERS_DAYS` (30) on with none set — plus the buffer, less what is
-  left after `by_on`'s dose. Only logged doses have left the cupboard: a
-  planned day already past with nothing logged is a miss, and is never counted
-  as used. The working comes with it — `covers_until`, `planned_doses`,
-  `planned_vials`, `leftover_vials`, `buffer_vials` — so the card can show how the
-  number was reached. No schedule, no order advice: there is no usage to
+  day set, only the stock sets it. An order on the order day is next month's
+  supply: `covers_from` is the 1st and `covers_until` the last day, and the
+  delivery has until the 1st to arrive. An early order runs until the next
+  regular order's month begins; with no order day set, the window is
+  `ORDER_COVERS_DAYS` (30) from `by_on`. `vials` covers the planned doses in
+  the window, the bridge doses between `by_on` and `covers_from`, and the
+  buffer, less what is left after `by_on`'s dose. Only logged doses have left
+  the cupboard: a planned day already past with nothing logged is a miss, and
+  is never counted as used. The working comes with it — `covers_from`,
+  `covers_until`, `planned_doses`, `planned_vials`, `bridge_doses`,
+  `bridge_vials`, `leftover_vials`, `buffer_vials` — so the card can show how
+  the number was reached. No schedule, no order advice: there is no usage to
   forecast. `stock_state` reads the same buffer: `low` under it, `moderate`
   under twice it, and with none set the routine's dose size stands in (two
   and five doses).

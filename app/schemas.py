@@ -239,12 +239,14 @@ class ClinicalProfile(BaseModel):
     #: appear on the Medical ID's "current medication" line.
     prophylactic_medication: MedicationDetails | None = None
     on_demand_medication: MedicationDetails | None = None
-    #: Vials to keep at home. Collected beside the routine; the fold says to order
-    #: once the stock falls below it, and walks the schedule to find the day it
-    #: will. Lives in the JSON column like everything else here.
+    #: Vials to keep at home on top of the routine — what the person expects
+    #: to need if they bleed in the coming month. Collected beside the routine;
+    #: every order adds it, and the fold says to order early once the stock is
+    #: forecast to fall below it. Lives in the JSON column like everything else.
     minimum_buffer_vials: int | None = Field(default=None, ge=0, le=VIALS_MAX)
-    #: The day of the month the person orders on, asked beside the buffer. The
-    #: fold advises ordering on it; a month too short for it uses its last day.
+    #: The day of the month the person orders next month's supply, asked beside
+    #: the buffer — early enough for delivery before the 1st. The fold advises
+    #: ordering on it; a month too short for it uses its last day.
     order_day_of_month: int | None = Field(default=None, ge=1, le=31)
     # Medical ID. Optional, and in the JSON column, so a row written before
     # these existed reads back as None and the card says "Not recorded"
@@ -660,23 +662,33 @@ class OrderAdvice(BaseModel):
     `by_on` is the profile's next monthly order day (`on_order_day`), or an
     earlier day when the stock is forecast to fall below the buffer or run out
     before it — today, if it already has. Without an order day only the stock
-    sets it. `due` says it has arrived. `vials` covers the planned doses after
-    `by_on` through `covers_until` and leaves the buffer on the shelf, less
-    what will still be there after `by_on`'s dose. Only logged doses have left
-    the cupboard: a missed dose is never counted as used. The rest is the
-    working, so the card can show how the number was reached.
+    sets it. `due` says it has arrived.
+
+    An order on the order day is next month's supply: `covers_from` is the 1st
+    and `covers_until` the last day, and the delivery has until the 1st to
+    arrive. An early order runs until the next regular order's month begins.
+    `vials` covers the planned doses in that window, the bridge doses between
+    `by_on` and `covers_from` that the stock must still supply, and the buffer
+    on top, less what will still be there after `by_on`'s dose. Only logged
+    doses have left the cupboard: a missed dose is never counted as used. The
+    rest is the working, so the card can show how the number was reached.
     """
 
     by_on: date
     vials: int
     due: bool
     on_order_day: bool
-    #: The end of the window the order is sized for: the following monthly
-    #: order day, or `ORDER_COVERS_DAYS` after `by_on` with none set.
+    #: The window the order is sized for: a calendar month with an order day
+    #: set (or the rest of one, for an early order), otherwise the day after
+    #: `by_on` through `ORDER_COVERS_DAYS` after it.
+    covers_from: date
     covers_until: date
-    #: The doses planned after `by_on` through `covers_until`, and their vials.
+    #: The doses planned from `covers_from` through `covers_until`, and their vials.
     planned_doses: int
     planned_vials: int
+    #: The doses planned after `by_on` and before `covers_from`, and their vials.
+    bridge_doses: int
+    bridge_vials: int
     #: What will still be in the cupboard after `by_on`'s dose.
     leftover_vials: int
     #: The vials the profile keeps at home; zero when none is set.

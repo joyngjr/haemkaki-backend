@@ -21,7 +21,9 @@ Three questions, answered in one pass because they share their inputs:
   stock, which gives the run-out date and, before it, the day the stock falls
   below the profile's buffer;
 * when to order and how much — on the profile's monthly order day, or sooner
-  if the stock falls below the buffer or runs out before it.
+  if the stock falls below the buffer or runs out before it. An order placed
+  on the order day is next month's supply, the 1st to its last day, so the
+  delivery has until the 1st to arrive.
 
 The dose state is a *schedule estimate*, not a measured factor level and not
 pharmacokinetics. It is the same claim the frontend already makes for its
@@ -81,7 +83,8 @@ STOCK_WELL_STOCKED_DOSES = 5
 STOCK_MODERATE_DOSES = 2
 
 #: With no monthly order day set, an order covers this many days of doses
-#: past the day it is placed, and then the buffer on top.
+#: past the day it is placed, and then the buffer on top. With one set, it
+#: covers a calendar month instead — see `build_supply`.
 ORDER_COVERS_DAYS = 30
 
 #: How far back the fold looks for missed doses. Home shows a handful of recent
@@ -118,9 +121,12 @@ class OrderAdvice:
     #: an earlier one forced by the stock falling below the buffer.
     on_order_day: bool
     #: The working behind `vials`, so the card can show it. See `schemas.OrderAdvice`.
+    covers_from: date
     covers_until: date
     planned_doses: int
     planned_vials: int
+    bridge_doses: int
+    bridge_vials: int
     leftover_vials: int
     buffer_vials: int
 
@@ -211,6 +217,11 @@ def next_order_day(from_day: date, day_of_month: int) -> date:
         if candidate >= from_day:
             return candidate
         year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+
+
+def month_end(day: date) -> date:
+    """The last day of `day`'s month."""
+    return day.replace(day=calendar.monthrange(day.year, day.month)[1])
 
 
 def _days(since: date, until: date) -> Iterator[date]:
@@ -600,34 +611,45 @@ def build_supply(
         return snapshot
 
     # How much: the stock left after the doses up to and including the order
-    # day, set against the doses after it through the next regular order day
-    # — or a month on, with none set — plus the buffer to keep at home.
-    covers_until = (
-        next_order_day(by_on + timedelta(days=1), order_day)
-        if order_day
-        else by_on + timedelta(days=ORDER_COVERS_DAYS)
-    )
+    # day, set against the doses after it through the end of the month the
+    # order is for, plus the buffer to keep at home. An order on the order day
+    # is next month's supply, 1st to last day, and the delivery has until the
+    # 1st to arrive; the rest of this month still comes out of the stock (the
+    # bridge). An early order runs until the next regular order's month begins
+    # — the rest of this month, or of next month if this month's order day has
+    # passed. With no order day set, a fixed stretch from the order.
+    after_order = by_on + timedelta(days=1)
+    if order_day:
+        covers_until = month_end(next_order_day(after_order, order_day))
+        covers_from = max(covers_until.replace(day=1), after_order)
+    else:
+        covers_until = by_on + timedelta(days=ORDER_COVERS_DAYS)
+        covers_from = after_order
     # `by_on` never passes the last dose the stock can supply, so this is
     # always a real balance, never a shortfall.
     leftover = next(
         (left for on, left in reversed(supplied) if on <= by_on), snapshot.vials_on_hand
     )
-    planned = [
+    upcoming = [
         occurrence
-        for occurrence in occurrences(
-            schedules, exceptions, plans, by_on + timedelta(days=1), covers_until
-        )
+        for occurrence in occurrences(schedules, exceptions, plans, after_order, covers_until)
         if occurrence.on not in settled
     ]
+    bridge = [occurrence for occurrence in upcoming if occurrence.on < covers_from]
+    planned = [occurrence for occurrence in upcoming if occurrence.on >= covers_from]
     needed = sum(occurrence.vials for occurrence in planned)
+    bridging = sum(occurrence.vials for occurrence in bridge)
     snapshot.order = OrderAdvice(
         by_on=by_on,
-        vials=max(0, needed + buffer - leftover),
+        vials=max(0, needed + bridging + buffer - leftover),
         due=by_on <= as_of,
         on_order_day=on_order_day,
+        covers_from=covers_from,
         covers_until=covers_until,
         planned_doses=len(planned),
         planned_vials=needed,
+        bridge_doses=len(bridge),
+        bridge_vials=bridging,
         leftover_vials=leftover,
         buffer_vials=buffer,
     )

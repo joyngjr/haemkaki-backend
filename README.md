@@ -97,8 +97,8 @@ they existed comes back with them as `null` and the card says "Not recorded".
 
 ## The event ledger
 
-`POST /users/{id}/events` takes one of five kinds, spelled exactly as the
-frontend's `TrackerEntry` in `src/lib/tracker-entries.ts` — `refill`,
+`POST /users/{id}/events` takes one of six kinds, spelled exactly as the
+frontend's `TrackerEntry` in `src/lib/tracker-entries.ts` — `refill`, `removal`,
 `prophylaxis`, `on-demand`, `follow-up`, `makeup` — with an `occurred_on` day.
 A missed dose is not among them: it is the absence of a use on a planned day,
 and `/status` derives it. An `on-demand` row may carry `bleed_nature`

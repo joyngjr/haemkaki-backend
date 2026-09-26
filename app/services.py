@@ -7,8 +7,8 @@ balance column would have applied it at the end.
 
 Three questions, answered in one pass because they share their inputs:
 
-* how many vials are at home — refills minus doses, each prophylaxis dose
-  sized by the schedule (or the plan) in force on its day;
+* how many vials are at home — refills minus removals and doses, each
+  prophylaxis dose sized by the schedule (or the plan) in force on its day;
 * what is planned — the schedule's occurrences, with moved ones moved and a
   plan's dates following the plan instead, and from those the next dose that
   nothing has settled;
@@ -20,7 +20,8 @@ Three questions, answered in one pass because they share their inputs:
   stock, which gives the run-out date and, before it, the day the stock falls
   below the profile's buffer;
 * when to order and how much — on the profile's monthly order day, or sooner
-  if the stock falls below the buffer or runs out before it.
+  if the stock falls below the buffer or runs out before it, including an EWMA
+  forecast for bleed treatment over the next month.
 
 The dose state is a *schedule estimate*, not a measured factor level and not
 pharmacokinetics. It is the same claim the frontend already makes for its
@@ -29,6 +30,7 @@ cover figure (`CoverStatus.source: "scheduleEstimate"` in `src/lib/home-data.ts`
 
 import calendar
 import logging
+import math
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -83,6 +85,11 @@ STOCK_MODERATE_DOSES = 2
 #: past the day it is placed, and then the buffer on top.
 ORDER_COVERS_DAYS = 30
 
+#: Bleed demand uses six trailing 30-day buckets. Recent months receive more
+#: weight while older use still tempers one unusually busy month.
+BLEED_EWMA_ALPHA = 0.29
+BLEED_EWMA_MONTHS = 6
+
 #: How far back the fold looks for missed doses. Home shows a handful of recent
 #: ones; the tracker derives its own from the month it is showing.
 MISSED_LOOKBACK_DAYS = 30
@@ -120,6 +127,7 @@ class OrderAdvice:
     covers_until: date
     planned_doses: int
     planned_vials: int
+    bleed_vials: int
     leftover_vials: int
     buffer_vials: int
 
@@ -408,6 +416,11 @@ def event_vials(event: TrackingEvent, dose_vials: int) -> int:
             logger.warning("refill event %s has no vials; skipped", event.id)
             return 0
         return event.vials
+    if event.kind == EventKind.removal.value:
+        if not event.vials:
+            logger.warning("removal event %s has no vials; skipped", event.id)
+            return 0
+        return -event.vials
     if event.kind == EventKind.prophylaxis.value:
         # A dose may say how big it was; otherwise the routine sizes it.
         return -(event.vials or dose_vials)
@@ -423,6 +436,37 @@ def event_vials(event: TrackingEvent, dose_vials: int) -> int:
             return -dose_vials
         return 0
     return 0
+
+
+def forecast_bleed_vials(
+    events: Sequence[TrackingEvent],
+    schedules: list[DoseSchedule],
+    plans: Sequence[DosePlan],
+    as_of: date,
+) -> int:
+    """Forecast vials for bleed treatment over the next 30 days.
+
+    ``x_t`` is the on-demand and follow-up factor used in one trailing 30-day
+    bucket. Starting at zero, ``s_t = alpha*x_t + (1-alpha)*s_(t-1)`` is
+    evaluated oldest to newest, then rounded up so an order does not request a
+    fraction of a vial.
+    """
+    first_day = as_of - timedelta(days=ORDER_COVERS_DAYS * BLEED_EWMA_MONTHS - 1)
+    buckets = [0] * BLEED_EWMA_MONTHS
+    for event in events:
+        if event.kind not in {EventKind.on_demand.value, EventKind.follow_up.value}:
+            continue
+        if event.occurred_on < first_day or event.occurred_on > as_of:
+            continue
+        bucket = (event.occurred_on - first_day).days // ORDER_COVERS_DAYS
+        buckets[bucket] += abs(
+            event_vials(event, dose_vials_on(schedules, plans, event.occurred_on))
+        )
+
+    estimate = 0.0
+    for used in buckets:
+        estimate = BLEED_EWMA_ALPHA * used + (1 - BLEED_EWMA_ALPHA) * estimate
+    return math.ceil(estimate)
 
 
 def applied_vials(
@@ -472,7 +516,8 @@ def build_supply(
         if total < 0:
             # Applied per event rather than once at the end, so a shortfall a
             # later refill covers is still recorded as a shortfall.
-            snapshot.unaccounted_vials += -total
+            if event.kind in DOSE_KINDS:
+                snapshot.unaccounted_vials += -total
             total = 0
         if event.kind in DOSE_KINDS:
             snapshot.last_dose_on = event.occurred_on
@@ -595,14 +640,16 @@ def build_supply(
         if occurrence.on not in settled
     ]
     needed = sum(occurrence.vials for occurrence in planned)
+    bleed_vials = forecast_bleed_vials(events, schedules, plans, as_of)
     snapshot.order = OrderAdvice(
         by_on=by_on,
-        vials=max(0, needed + buffer - leftover),
+        vials=max(0, needed + bleed_vials + buffer - leftover),
         due=by_on <= as_of,
         on_order_day=on_order_day,
         covers_until=covers_until,
         planned_doses=len(planned),
         planned_vials=needed,
+        bleed_vials=bleed_vials,
         leftover_vials=leftover,
         buffer_vials=buffer,
     )

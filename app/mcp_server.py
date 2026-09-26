@@ -56,7 +56,8 @@ INSTRUCTIONS = (
     "- Dates are calendar days in Singapore time, written YYYY-MM-DD. There is no time of "
     "day. `status.as_of` from get_profile is today.\n"
     "- Nothing is authenticated. Confirm with the user which profile you are writing into.\n"
-    "- Five kinds of row: refill (vials that arrived); prophylaxis (the routine dose — pass "
+    "- Six kinds of row: refill (vials that arrived); removal (expired stock or a correction); "
+    "prophylaxis (the routine dose — pass "
     "`vials` only when the source says how big it was, otherwise the routine sizes it, and "
     "with no routine a routine-sized dose charges nothing); on-demand (a dose given for a "
     "bleed — this is how the app marks a bleed; add `bleed_nature`: spontaneous or traumatic "
@@ -168,8 +169,8 @@ def get_profile(profile_id: int) -> ProfileStatusRead:
     description=(
         "The ledger, oldest first, up to 500 rows, optionally between since and until "
         "(YYYY-MM-DD, inclusive). Each row carries applied_vials: the vials the supply count "
-        "charged for it (positive for a refill, negative for a dose, zero when the amount is "
-        "unknown). Check what is already logged before importing; verify afterwards."
+        "charged for it (positive for a refill, negative for a removal or dose, zero when the "
+        "amount is unknown). Check what is already logged before importing; verify afterwards."
     ),
     annotations=READ_ONLY,
 )
@@ -235,7 +236,7 @@ def set_routine(
     title="Import ledger rows",
     description=(
         "Write rows from another tracker into the ledger, up to 500 per call, in the ledger "
-        "vocabulary (see the server instructions for the five kinds). Defaults to "
+        "vocabulary (see the server instructions for the six kinds). Defaults to "
         "dry_run=true, which validates and reports what would happen without writing: show "
         "that to the user, and call again with dry_run=false only after they confirm. Rules: "
         "one refill and one factor use (prophylaxis, on-demand, follow-up, makeup) per day; "
@@ -328,7 +329,8 @@ def import_tracker(
         "1. Ask for the file or the pasted rows if you do not have them yet.\n"
         "2. Work out which columns hold the date, the type of entry, the amount and any "
         "notes. Say what you found and what you are unsure about.\n"
-        "3. Map each row to one kind: refill, prophylaxis, on-demand (a bleed treated), "
+        "3. Map each row to one kind: refill, removal (expired stock or a correction), "
+        "prophylaxis, on-demand (a bleed treated), "
         "follow-up or makeup (a dose taken late, naming the day it was owed for). A row "
         "that only says a dose was missed has no kind — say so, and set the routine "
         "instead, which is what makes the empty day read as missed. Amounts are whole "

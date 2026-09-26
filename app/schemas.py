@@ -375,6 +375,13 @@ class RefillCreate(EventCreateBase):
     vials: int = Field(gt=0, le=VIALS_MAX)
 
 
+class RemovalCreate(EventCreateBase):
+    """Vials removed without being administered, such as expired stock or a correction."""
+
+    kind: Literal[EventKind.removal]
+    vials: int = Field(gt=0, le=VIALS_MAX)
+
+
 class ProphylaxisCreate(EventCreateBase):
     """The planned preventative dose.
 
@@ -425,7 +432,12 @@ class MakeupCreate(EventCreateBase):
 
 
 EventCreate = Annotated[
-    RefillCreate | ProphylaxisCreate | OnDemandCreate | FollowUpCreate | MakeupCreate,
+    RefillCreate
+    | RemovalCreate
+    | ProphylaxisCreate
+    | OnDemandCreate
+    | FollowUpCreate
+    | MakeupCreate,
     Field(discriminator="kind"),
 ]
 
@@ -646,10 +658,10 @@ class OrderAdvice(BaseModel):
     earlier day when the stock is forecast to fall below the buffer or run out
     before it — today, if it already has. Without an order day only the stock
     sets it. `due` says it has arrived. `vials` covers the planned doses after
-    `by_on` through `covers_until` and leaves the buffer on the shelf, less
-    what will still be there after `by_on`'s dose. Only logged doses have left
-    the cupboard: a missed dose is never counted as used. The rest is the
-    working, so the card can show how the number was reached.
+    `by_on` through `covers_until`, the next 30 days' predicted bleed treatment,
+    and the buffer, less what will still be there after `by_on`'s dose. Only
+    logged doses have left the cupboard: a missed dose is never counted as
+    used. The rest is the working, so the card can show how the number was reached.
     """
 
     by_on: date
@@ -662,6 +674,8 @@ class OrderAdvice(BaseModel):
     #: The doses planned after `by_on` through `covers_until`, and their vials.
     planned_doses: int
     planned_vials: int
+    #: Extra vials forecast for bleed treatment in the next 30 days using an EWMA.
+    bleed_vials: int
     #: What will still be in the cupboard after `by_on`'s dose.
     leftover_vials: int
     #: The vials the profile keeps at home; zero when none is set.

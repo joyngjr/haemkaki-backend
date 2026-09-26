@@ -73,6 +73,7 @@ class EventKind(str, Enum):
     """
 
     refill = "refill"
+    removal = "removal"
     prophylaxis = "prophylaxis"
     on_demand = "on-demand"
     follow_up = "follow-up"
@@ -115,8 +116,8 @@ class TrackingEvent(SQLModel, table=True):
     user_id: int = Field(foreign_key="user.id", index=True)
     kind: str
     occurred_on: date = Field(index=True)
-    #: Vials: refill / on-demand / follow-up, and a prophylaxis dose logged with
-    #: its own count. A prophylaxis dose without one defers to the routine.
+    #: Vials: refill / removal / on-demand / follow-up, and a prophylaxis dose
+    #: logged with its own count. A prophylaxis dose without one defers to the routine.
     vials: int | None = None
     #: on-demand -> whether the bleed was spontaneous or traumatic. Null on
     #: doses logged before the question existed and on imported history.

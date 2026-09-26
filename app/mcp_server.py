@@ -56,14 +56,16 @@ INSTRUCTIONS = (
     "- Dates are calendar days in Singapore time, written YYYY-MM-DD. There is no time of "
     "day. `status.as_of` from get_profile is today.\n"
     "- Nothing is authenticated. Confirm with the user which profile you are writing into.\n"
-    "- Five kinds of row: refill (vials that arrived); prophylaxis (the routine dose — pass "
+    "- Six kinds of row: refill (vials that arrived); prophylaxis (the routine dose — pass "
     "`vials` only when the source says how big it was, otherwise the routine sizes it, and "
     "with no routine a routine-sized dose charges nothing); on-demand (a dose given for a "
     "bleed — this is how the app marks a bleed; add `bleed_nature`: spontaneous or traumatic "
     "only when the source says which); follow-up (a later dose for that bleed); "
     "makeup (a planned dose taken late: occurred_on is the day taken, missed_on the planned "
-    "day it was owed for, amount {source: custom, vials: N} or {source: routine}).\n"
-    "- One refill and one factor use per day.\n"
+    "day it was owed for, amount {source: custom, vials: N} or {source: routine}); "
+    "count (the vials actually at home that day, zero allowed — the stock is set to it, "
+    "whatever the rows before it add up to).\n"
+    "- One refill, one factor use and one count per day.\n"
     "- A missed dose is not a row and cannot be written: it is derived from the routine as a "
     "planned day already past with no factor use on it, and `status.missed_doses` lists the "
     "recent ones. To record one, import the routine for that period and leave the day empty; "
@@ -169,7 +171,8 @@ def get_profile(profile_id: int) -> ProfileStatusRead:
         "The ledger, oldest first, up to 500 rows, optionally between since and until "
         "(YYYY-MM-DD, inclusive). Each row carries applied_vials: the vials the supply count "
         "charged for it (positive for a refill, negative for a dose, zero when the amount is "
-        "unknown). Check what is already logged before importing; verify afterwards."
+        "unknown, and for a count the correction it made). Check what is already logged "
+        "before importing; verify afterwards."
     ),
     annotations=READ_ONLY,
 )
@@ -187,11 +190,7 @@ def list_events(
             statement = statement.where(TrackingEvent.occurred_on <= until)
         statement = statement.order_by(TrackingEvent.occurred_on, TrackingEvent.id).limit(LIMIT_MAX)
         events = list(session.exec(statement).all())
-        applied = services.applied_vials(
-            events,
-            services.load_schedules(session, profile_id),
-            services.load_plans(session, profile_id),
-        )
+        applied = services.applied_vials(session, profile_id)
         return EventsRead(events=[event_read(e, applied.get(e.id or 0, 0)) for e in events])
 
 
@@ -235,7 +234,7 @@ def set_routine(
     title="Import ledger rows",
     description=(
         "Write rows from another tracker into the ledger, up to 500 per call, in the ledger "
-        "vocabulary (see the server instructions for the five kinds). Defaults to "
+        "vocabulary (see the server instructions for the six kinds). Defaults to "
         "dry_run=true, which validates and reports what would happen without writing: show "
         "that to the user, and call again with dry_run=false only after they confirm. Rules: "
         "one refill and one factor use (prophylaxis, on-demand, follow-up, makeup) per day; "
@@ -329,7 +328,8 @@ def import_tracker(
         "2. Work out which columns hold the date, the type of entry, the amount and any "
         "notes. Say what you found and what you are unsure about.\n"
         "3. Map each row to one kind: refill, prophylaxis, on-demand (a bleed treated), "
-        "follow-up or makeup (a dose taken late, naming the day it was owed for). A row "
+        "follow-up, makeup (a dose taken late, naming the day it was owed for) or count (a "
+        "stocktake: the vials on hand that day). A row "
         "that only says a dose was missed has no kind — say so, and set the routine "
         "instead, which is what makes the empty day read as missed. Amounts are whole "
         "vials: if the sheet records IU, ask how many IU one vial holds before converting, "

@@ -77,6 +77,10 @@ class EventKind(str, Enum):
     on_demand = "on-demand"
     follow_up = "follow-up"
     makeup = "makeup"
+    #: A stock count: the vials actually on the shelf, which the fold takes
+    #: over the running total. How a wrong entry is corrected without hunting
+    #: for it.
+    count = "count"
 
 
 class AmountSource(str, Enum):
@@ -117,6 +121,7 @@ class TrackingEvent(SQLModel, table=True):
     occurred_on: date = Field(index=True)
     #: Vials: refill / on-demand / follow-up, and a prophylaxis dose logged with
     #: its own count. A prophylaxis dose without one defers to the routine.
+    #: count -> the vials on the shelf, which may be zero.
     vials: int | None = None
     #: on-demand -> whether the bleed was spontaneous or traumatic. Null on
     #: doses logged before the question existed and on imported history.

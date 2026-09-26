@@ -8,7 +8,8 @@ balance column would have applied it at the end.
 Three questions, answered in one pass because they share their inputs:
 
 * how many vials are at home — refills minus doses, each prophylaxis dose
-  sized by the schedule (or the plan) in force on its day;
+  sized by the schedule (or the plan) in force on its day, and reset to the
+  counted figure by any stock count;
 * what is planned — the schedule's occurrences, with moved ones moved and a
   plan's dates following the plan instead, and from those the next dose that
   nothing has settled;
@@ -425,15 +426,44 @@ def event_vials(event: TrackingEvent, dose_vials: int) -> int:
     return 0
 
 
-def applied_vials(
+def walk_stock(
     events: list[TrackingEvent], schedules: list[DoseSchedule], plans: Sequence[DosePlan]
-) -> dict[int, int]:
-    """What the fold charges for each event, keyed by id — for the read models."""
-    return {
-        event.id: event_vials(event, dose_vials_on(schedules, plans, event.occurred_on))
-        for event in events
-        if event.id is not None
-    }
+) -> Iterator[tuple[TrackingEvent, int, int, int]]:
+    """Each event, oldest first, with the vials it moved, the stock after it,
+    and any shortfall it ran into.
+
+    A count is not in `event_vials` because what it moves depends on the
+    stock before it: it moves the stock to the counted figure, and reports
+    the difference as its charge.
+
+    The stock never goes below zero. A dose the ledger could not supply is a
+    shortfall, clamped per event rather than once at the end, so a shortfall
+    a later refill covers is still recorded as one.
+    """
+    stock = 0
+    for event in events:
+        if event.kind == EventKind.count.value:
+            moved = (event.vials or 0) - stock
+        else:
+            moved = event_vials(event, dose_vials_on(schedules, plans, event.occurred_on))
+        stock += moved
+        shortfall = max(-stock, 0)
+        stock = max(stock, 0)
+        yield event, moved, stock, shortfall
+
+
+def applied_vials(session: Session, user_id: int) -> dict[int, int]:
+    """What the fold charges for each event, keyed by id — for the read models.
+
+    Walks the whole ledger whatever the caller is about to show, because a
+    count's charge depends on every event before it.
+    """
+    walk = walk_stock(
+        ledger(session, user_id, date.max),
+        load_schedules(session, user_id),
+        load_plans(session, user_id),
+    )
+    return {event.id: moved for event, moved, _, _ in walk if event.id is not None}
 
 
 # ---------------------------------------------------------------------------
@@ -463,22 +493,15 @@ def build_supply(
         order_day=order_day,
     )
 
-    total = 0
-    for event in events:
-        moved = event_vials(event, dose_vials_on(schedules, plans, event.occurred_on))
+    for event, moved, stock, shortfall in walk_stock(events, schedules, plans):
         if event.id is not None:
             snapshot.applied[event.id] = moved
-        total += moved
-        if total < 0:
-            # Applied per event rather than once at the end, so a shortfall a
-            # later refill covers is still recorded as a shortfall.
-            snapshot.unaccounted_vials += -total
-            total = 0
+        snapshot.vials_on_hand = stock
+        snapshot.unaccounted_vials += shortfall
         if event.kind in DOSE_KINDS:
             snapshot.last_dose_on = event.occurred_on
         if event.kind == EventKind.on_demand.value:
             snapshot.last_bleed_on = event.occurred_on
-    snapshot.vials_on_hand = total
 
     # Anything that puts doses on the calendar: the series, and any plan with
     # a rhythm of its own. A plan that only resizes doses plans nothing alone.
@@ -538,7 +561,7 @@ def build_supply(
     # the buffer, and the first planned dose it cannot supply at all, which is
     # when it runs out. `supplied` records the stock after each dose it can.
     buffer = snapshot.buffer_vials
-    stock = total
+    stock = snapshot.vials_on_hand
     low_on = as_of if stock < buffer else None
     last_supplied_on = as_of
     supplied: list[tuple[date, int]] = []
@@ -586,7 +609,9 @@ def build_supply(
     )
     # `by_on` never passes the last dose the stock can supply, so this is
     # always a real balance, never a shortfall.
-    leftover = next((left for on, left in reversed(supplied) if on <= by_on), total)
+    leftover = next(
+        (left for on, left in reversed(supplied) if on <= by_on), snapshot.vials_on_hand
+    )
     planned = [
         occurrence
         for occurrence in occurrences(

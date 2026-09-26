@@ -424,8 +424,22 @@ class MakeupCreate(EventCreateBase):
         return self
 
 
+class CountCreate(EventCreateBase):
+    """The vials actually at home, counted — how a wrong entry is corrected.
+
+    Not a delta: the fold takes the count over whatever the entries before it
+    add up to, so editing or backdating an earlier entry cannot move a figure
+    the user checked against the shelf. Same-day entries are placed by the
+    order they were logged in, so a dose logged after the count still comes off it.
+    Zero is a real count.
+    """
+
+    kind: Literal[EventKind.count]
+    vials: int = Field(ge=0, le=VIALS_MAX)
+
+
 EventCreate = Annotated[
-    RefillCreate | ProphylaxisCreate | OnDemandCreate | FollowUpCreate | MakeupCreate,
+    RefillCreate | ProphylaxisCreate | OnDemandCreate | FollowUpCreate | MakeupCreate | CountCreate,
     Field(discriminator="kind"),
 ]
 
@@ -469,7 +483,8 @@ class TrackingEventRead(BaseModel):
     amount_source: AmountSource | None = None
     amount_vials: int | None = None
     #: The vials the fold charged the cupboard for this event: positive for a
-    #: refill, negative for a dose, zero when the amount is not known. Derived
+    #: refill, negative for a dose, zero when the amount is not known, and for
+    #: a count the correction it made to the running total. Derived
     #: on every read — a prophylaxis dose is sized by the schedule in force on
     #: its day, or by its own `vials` when it was logged with one — so the
     #: tracker shows the figure the supply total actually used.

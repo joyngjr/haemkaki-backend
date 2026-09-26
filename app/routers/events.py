@@ -74,12 +74,8 @@ def _check_writable(
 
 
 def _read_one(session: Session, event: TrackingEvent) -> TrackingEventRead:
-    schedules = services.load_schedules(session, event.user_id)
-    plans = services.load_plans(session, event.user_id)
-    return event_read(
-        event,
-        services.event_vials(event, services.dose_vials_on(schedules, plans, event.occurred_on)),
-    )
+    applied = services.applied_vials(session, event.user_id)
+    return event_read(event, applied.get(event.id or 0, 0))
 
 
 @router.get("", response_model=list[TrackingEventRead])
@@ -105,9 +101,7 @@ def list_events(
         statement = statement.where(TrackingEvent.occurred_on <= until)
     statement = statement.order_by(TrackingEvent.occurred_on, TrackingEvent.id)
     events = list(session.exec(statement.offset(offset).limit(limit)).all())
-    applied = services.applied_vials(
-        events, services.load_schedules(session, user_id), services.load_plans(session, user_id)
-    )
+    applied = services.applied_vials(session, user_id)
     return [event_read(event, applied.get(event.id or 0, 0)) for event in events]
 
 

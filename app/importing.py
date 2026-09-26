@@ -12,7 +12,7 @@ The rules mirror the tracker's own per-day invariants (`withEntry` and
 `src/pages/Tracker.tsx`), which the API never enforced on its own:
 
 - Only rows on the same `occurred_on` interact.
-- A refill collides with another refill and nothing else.
+- A refill collides with another refill and nothing else; so does a count.
 - The four factor uses — prophylaxis, on-demand, follow-up, makeup — collide
   with each other: one use per day.
 - A missed dose is nothing to import. It is derived from the routine (a
